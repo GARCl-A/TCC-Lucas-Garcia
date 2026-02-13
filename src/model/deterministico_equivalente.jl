@@ -24,7 +24,9 @@ struct OptimizationCache
     # Parâmetros (Seção 4.3)
     probabilidade_cenario::Float64           # π_ω: probabilidade de cada cenário (equiprovável)
     pld_cenario::Dict                        # P^ω_{s,t}: PLD por (mês, submercado, cenário)
-    producao_usina::Dict                     # G_{s,t}: geração da usina por (mês, usina)
+    producao_usina::Dict                     # G_{u,t}: geração da usina u por (mês, usina)
+    usinas::Vector{Int}                      # 𝒰: códigos das usinas
+    submercado_usina::Dict{Int, String}      # s(u): mapeamento usina → submercado
     volume_compra_existente::Dict            # Q^{0,B}_{s,t}: volume de compras já existentes por (mês, submercado)
     volume_venda_existente::Dict             # Q^{0,S}_{s,t}: volume de vendas já existentes por (mês, submercado)
     preco_compra_existente::Dict             # K^{0,B}_{s,t}: preço de compras já existentes por (mês, submercado)
@@ -40,13 +42,14 @@ struct OptimizationResult
     cvar_lucro_milhoes::Float64
     volume_hedge_mw::Float64
     status::String
+    model::Union{Model, Nothing}  # Armazena o modelo otimizado
 end
 
 function load_frontier_config()
     return FrontierConfig(
         joinpath(@__DIR__, "../..", "data", "processed"),
         0.95,
-        [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99]
+        [0.0, 0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99]
     )
 end
 
@@ -73,7 +76,7 @@ function build_optimization_cache(data::MarketData)::OptimizationCache
     # Conjuntos do Modelo (Seção 4.2)
     # ========================================
     meses_futuros = sort(unique(data.cenarios.data))
-    submercados = unique(data.cenarios.submercado)
+    submercados = unique(data.geracao.submercado)  # Submercados com usinas reais
     trades_disponiveis = 1:nrow(data.trades)
     num_cenarios = maximum(data.cenarios.cenario)
     cenarios_preco = 1:num_cenarios
@@ -84,6 +87,10 @@ function build_optimization_cache(data::MarketData)::OptimizationCache
     probabilidade_cenario = 1.0 / num_cenarios
     pld_cenario = Dict((r.data, r.submercado, r.cenario) => r.valor for r in eachrow(data.cenarios))
     producao_usina = Dict((r.data, r.usina_cod) => r.geracao_mwm for r in eachrow(data.geracao))
+    
+    # Extrai usinas e seus submercados
+    usinas = unique(data.geracao.usina_cod)
+    submercado_usina = Dict(r.usina_cod => r.submercado for r in eachrow(data.geracao))
     
     # Q^{0,B}_{s,t}, Q^{0,S}_{s,t}, K^{0,B}_{s,t}, K^{0,S}_{s,t}: volumes e preços dos contratos já existentes
     volume_compra_existente = Dict()
@@ -128,7 +135,7 @@ function build_optimization_cache(data::MarketData)::OptimizationCache
     
     return OptimizationCache(
         meses_futuros, submercados, trades_disponiveis, cenarios_preco, num_cenarios,
-        probabilidade_cenario, pld_cenario, producao_usina,
+        probabilidade_cenario, pld_cenario, producao_usina, usinas, submercado_usina,
         volume_compra_existente, volume_venda_existente,
         preco_compra_existente, preco_venda_existente,
         indices_trades_por_mes_submercado
@@ -201,11 +208,18 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     @expression(model, lucro_cenario[cenario in cache.cenarios_preco], lucro_contratos_existentes + lucro_novos_trades)
     
     # Parte 3: Lucro da Exposição ao PLD (estocástico)
-    # TODO: Generalizar usinas e submercados
+    total_iteracoes = length(cache.meses_futuros) * length(cache.submercados) * length(cache.cenarios_preco)
+    iteracao_atual = 0
+    proximo_marco = 1
+    
     for mes in cache.meses_futuros, submercado in cache.submercados
         horas_no_mes = horas_mes(mes)
-        # G_{s,t}: produção da usina
-        producao = (submercado == "SE" ? get(cache.producao_usina, (mes, 202), 0.0) : 0.0)
+        # G_{s,t}: produção agregada de todas as usinas do submercado
+        producao = sum(
+            get(cache.producao_usina, (mes, u), 0.0) 
+            for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
+            init=0.0
+        )
         # Q^{0,B}_{s,t}: compras já existentes
         compra_existente = get(cache.volume_compra_existente, (mes,submercado), 0.0)
         # Q^{0,S}_{s,t}: vendas já existentes
@@ -229,8 +243,17 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
         for cenario in cache.cenarios_preco
             pld = get(cache.pld_cenario, (mes, submercado, cenario), 0.0)
             add_to_expression!(lucro_cenario[cenario], exposicao_pld * horas_no_mes * pld)
+            
+            # Progress tracking
+            iteracao_atual += 1
+            progresso = (iteracao_atual / total_iteracoes) * 100
+            if progresso >= proximo_marco
+                print("\r   Construindo modelo: $iteracao_atual/$total_iteracoes ($(round(Int, progresso))%)")
+                proximo_marco += 1
+            end
         end
     end
+    println("\r   Construindo modelo: $total_iteracoes/$total_iteracoes (100%) ✓")
     
     # ========================================
     # Restrições CVaR (Seção 4.8)
@@ -257,15 +280,24 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     # Objetivo: max E[R] + λ * CVaR
     # λ > 0: premia lucro nos piores cenários (aversão ao risco)
     # λ = 0: maximiza apenas retorno esperado (neutro ao risco)
-    @objective(model, Max, RetornoEsperado + λ * CVaR_lucro)    
+    @objective(model, Max, RetornoEsperado + λ * CVaR_lucro)
+    print("\r   Otimizando...")
     optimize!(model)
+    print("\r   ")
     
     status = termination_status(model)
     if status == MOI.OPTIMAL
         retorno_milhoes = value(RetornoEsperado) / 1e6
         cvar_lucro_milhoes = value(CVaR_lucro) / 1e6
         volume_hedge_total = sum(value.(volume_compra_trade)) + sum(value.(volume_venda_trade))
-        return OptimizationResult(λ, retorno_milhoes, cvar_lucro_milhoes, volume_hedge_total, "OPTIMAL")
+        
+        # Debug: mostrar trades executados quando λ=0
+        if λ == 0.0
+            trades_executados = sum(value.(volume_compra_trade) .> 0.01) + sum(value.(volume_venda_trade) .> 0.01)
+            println("\n   [DEBUG λ=0.0] Trades executados: $trades_executados de $(length(cache.trades_disponiveis))")
+        end
+        
+        return OptimizationResult(λ, retorno_milhoes, cvar_lucro_milhoes, volume_hedge_total, "OPTIMAL", model)
     else
         # Diagnóstico da falha
         println("\n   🔍 DIAGNÓSTICO DA FALHA (λ=$λ):")
@@ -286,7 +318,7 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
             println("   Detalhes: $(raw_status(model))")
         end
         
-        return OptimizationResult(λ, 0.0, 0.0, 0.0, "FAILED")
+        return OptimizationResult(λ, 0.0, 0.0, 0.0, "FAILED", nothing)
     end
 end
 
@@ -296,9 +328,18 @@ function calculate_benchmark(cache::OptimizationCache, config::FrontierConfig)::
     Retorna: (retorno_esperado, cvar_perda, desvio_padrao) em RS milhões
     """
     lucros_cenarios = Float64[]
+    total_cenarios = length(cache.cenarios_preco)
+    proximo_marco = 1
     
-    for cenario in cache.cenarios_preco
+    for (idx, cenario) in enumerate(cache.cenarios_preco)
         lucro_cenario = 0.0
+        
+        # Progress tracking
+        progresso = (idx / total_cenarios) * 100
+        if progresso >= proximo_marco
+            print("\r   Progresso: $idx/$total_cenarios ($(round(Int, progresso))%)")
+            proximo_marco += 1
+        end
         
         for mes in cache.meses_futuros, submercado in cache.submercados
             horas_no_mes = horas_mes(mes)
@@ -309,7 +350,11 @@ function calculate_benchmark(cache::OptimizationCache, config::FrontierConfig)::
             lucro_cenario += receita_venda - custo_compra
             
             # Parte 2: Exposição ao PLD (sem novos trades)
-            producao = (submercado == "SE" ? get(cache.producao_usina, (mes, 202), 0.0) : 0.0)
+            producao = sum(
+                get(cache.producao_usina, (mes, u), 0.0) 
+                for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
+                init=0.0
+            )
             compra_existente = get(cache.volume_compra_existente, (mes,submercado), 0.0)
             venda_existente = get(cache.volume_venda_existente, (mes,submercado), 0.0)
             exposicao_pld = producao + compra_existente - venda_existente
@@ -320,6 +365,7 @@ function calculate_benchmark(cache::OptimizationCache, config::FrontierConfig)::
         
         push!(lucros_cenarios, lucro_cenario)
     end
+    println("\r   Progresso: $total_cenarios/$total_cenarios (100%) ✓")
     
     # Métricas
     retorno_esperado = mean(lucros_cenarios) / 1e6
@@ -384,6 +430,84 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
     return resultados
 end
 
+function export_hedge_strategy(λ_escolhido::Float64, config::FrontierConfig, data::MarketData, cache::OptimizationCache)
+    println("\n📋 Exportando estratégia de hedge para λ=$λ_escolhido...")
+    
+    # Resolve o modelo para o λ escolhido
+    result = solve_cvar_model(λ_escolhido, config, data, cache)
+    
+    if result.status != "OPTIMAL" || isnothing(result.model)
+        println("❌ Não foi possível exportar: modelo não resolvido.")
+        return
+    end
+    
+    model = result.model
+    estrategia = []
+    
+    # Extrai decisões de trades
+    for trade_idx in cache.trades_disponiveis
+        vol_compra = value(model[:volume_compra_trade][trade_idx])
+        vol_venda = value(model[:volume_venda_trade][trade_idx])
+        
+        if vol_compra > 0.01 || vol_venda > 0.01
+            trade_info = data.trades[trade_idx, :]
+            push!(estrategia, (
+                mes = trade_info.data,
+                submercado = trade_info.submercado,
+                compra_mwm = round(vol_compra, digits=2),
+                preco_compra = trade_info.preco_compra,
+                venda_mwm = round(vol_venda, digits=2),
+                preco_venda = trade_info.preco_venda
+            ))
+        end
+    end
+    
+    df_estrategia = DataFrame(estrategia)
+    
+    # Calcula exposição final por (mês, submercado)
+    exposicao = []
+    for mes in cache.meses_futuros, submercado in cache.submercados
+        # Produção
+        producao = sum(
+            get(cache.producao_usina, (mes, u), 0.0) 
+            for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
+            init=0.0
+        )
+        
+        # Contratos existentes
+        compra_existente = get(cache.volume_compra_existente, (mes,submercado), 0.0)
+        venda_existente = get(cache.volume_venda_existente, (mes,submercado), 0.0)
+        
+        # Novos trades
+        trades_mes = filter(row -> row.mes == mes && row.submercado == submercado, df_estrategia)
+        compra_nova = nrow(trades_mes) > 0 ? sum(trades_mes.compra_mwm) : 0.0
+        venda_nova = nrow(trades_mes) > 0 ? sum(trades_mes.venda_mwm) : 0.0
+        
+        exposicao_final = producao + compra_existente + compra_nova - venda_existente - venda_nova
+        
+        push!(exposicao, (
+            mes = mes,
+            submercado = submercado,
+            producao_mwm = round(producao, digits=2),
+            compra_existente_mwm = round(compra_existente, digits=2),
+            venda_existente_mwm = round(venda_existente, digits=2),
+            compra_nova_mwm = round(compra_nova, digits=2),
+            venda_nova_mwm = round(venda_nova, digits=2),
+            exposicao_final_mwm = round(exposicao_final, digits=2)
+        ))
+    end
+    
+    df_exposicao = DataFrame(exposicao)
+    
+    # Salva arquivos
+    CSV.write(joinpath(config.data_dir, "estrategia_trades_lambda_$(λ_escolhido).csv"), df_estrategia)
+    CSV.write(joinpath(config.data_dir, "exposicao_pld_lambda_$(λ_escolhido).csv"), df_exposicao)
+    
+    println("✅ Estratégia exportada:")
+    println("   - estrategia_trades_lambda_$(λ_escolhido).csv ($(nrow(df_estrategia)) trades)")
+    println("   - exposicao_pld_lambda_$(λ_escolhido).csv ($(nrow(df_exposicao)) linhas)")
+end
+
 function save_results(resultados::DataFrame, config::FrontierConfig)
     println("\n📊 TABELA FRONTEIRA EFICIENTE:")
     println("\nLinha 1 = BENCHMARK (sem otimização)")
@@ -416,6 +540,9 @@ function main()
     
     resultados = run_frontier_optimization(config, data, cache)
     save_results(resultados, config)
+    
+    # Exporta estratégia detalhada para λ=0.01 (melhor trade-off)
+    export_hedge_strategy(0.01, config, data, cache)
 end
 
 main()

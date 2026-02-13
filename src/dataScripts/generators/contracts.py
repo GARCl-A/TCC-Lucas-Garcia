@@ -4,12 +4,12 @@ import glob
 
 # --- CONFIGURAÇÃO ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RAW_DIR = os.path.join(BASE_DIR, "../..", "data", "ccee", "contratos")
-PROCESSED_DIR = os.path.join(BASE_DIR, "../..", "data", "processed")
+RAW_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "..", "..", "data", "ccee", "contratos"))
+PROCESSED_DIR = os.path.normpath(os.path.join(BASE_DIR, "..", "..", "..", "data", "processed"))
+GERACAO_FILE = os.path.normpath(os.path.join(PROCESSED_DIR, "geracao.csv"))
 
 # PARAMETROS DA CARTEIRA INICIAL
-VOLUME_CONTRATADO = 40.0  # MWm (Venda Flat)
-SUBMERCADO_CONTRATO = "SE"  # Onde a usina entrega
+PERCENTUAL_CONTRATADO = 0.80  # 80% da produção média vendida
 ANO_INICIO = 2021
 ANO_FIM = 2025
 
@@ -17,7 +17,19 @@ ANO_FIM = 2025
 def processar_contratos_legados():
     print("💼 Iniciando processamento da Carteira Legada...")
 
-    # 1. Tentar calcular o Preço Médio Real (K0) dos arquivos
+    # 1. Ler arquivo de geração para calcular produção média por submercado
+    if not os.path.exists(GERACAO_FILE):
+        print(f"❌ Arquivo {GERACAO_FILE} não encontrado. Execute generation.py primeiro.")
+        return
+    
+    df_geracao = pd.read_csv(GERACAO_FILE)
+    producao_por_submercado = df_geracao.groupby('submercado')['geracao_mwm'].mean().to_dict()
+    
+    print("\n📊 Produção Média por Submercado:")
+    for sub, prod in producao_por_submercado.items():
+        print(f"   {sub}: {prod:.2f} MWm")
+    
+    # 2. Calcular preço médio dos contratos
     arquivos = glob.glob(os.path.join(RAW_DIR, "*.csv"))
 
     preco_medio = 230.00  # Valor Default (Fallback)
@@ -61,35 +73,37 @@ def processar_contratos_legados():
             f"   ⚠️ Arquivos não lidos ou sem coluna de preço. Usando Default: R$ {preco_medio:.2f}"
         )
 
-    # 2. Gerar a Carteira (2017-2021)
-    print(
-        f"⏳ Gerando contratos de VENDA de {VOLUME_CONTRATADO} MWm a R$ {preco_medio}..."
-    )
+    # 3. Gerar contratos proporcionais à produção de cada submercado
+    print(f"\n⏳ Gerando contratos de VENDA ({PERCENTUAL_CONTRATADO*100:.0f}% da produção) a R$ {preco_medio}...")
 
     carteira = []
     datas = pd.date_range(
         start=f"{ANO_INICIO}-01-01", end=f"{ANO_FIM}-12-01", freq="MS"
     )
 
-    for d in datas:
-        carteira.append(
-            {
-                "data": d,
-                "submercado": SUBMERCADO_CONTRATO,
-                "tipo": "VENDA",  # VENDA = Obrigação (Short)
-                "volume_mwm": VOLUME_CONTRATADO,
-                "preco_r_mwh": preco_medio,
-            }
-        )
+    for submercado, producao_media in producao_por_submercado.items():
+        volume_contratado = round(producao_media * PERCENTUAL_CONTRATADO, 2)
+        
+        for d in datas:
+            carteira.append(
+                {
+                    "data": d,
+                    "submercado": submercado,
+                    "tipo": "VENDA",  # VENDA = Obrigação (Short)
+                    "volume_mwm": volume_contratado,
+                    "preco_r_mwh": preco_medio,
+                }
+            )
 
-    # 3. Salvar
-    df_final = pd.DataFrame(carteira)
+    # 4. Salvar
+    df_final = pd.DataFrame(carteira).sort_values(['data', 'submercado'])
     path_saida = os.path.join(PROCESSED_DIR, "contratos_legacy.csv")
     df_final.to_csv(path_saida, index=False)
 
     print(f"\n✅ Arquivo gerado: {path_saida}")
-    print(df_final.head())
-    print(f"Total de meses contratados: {len(df_final)}")
+    print("\n📋 Resumo por Submercado:")
+    print(df_final.groupby('submercado')['volume_mwm'].agg(['count', 'mean']).round(2))
+    print(f"\nTotal de contratos: {len(df_final)}")
 
 
 if __name__ == "__main__":

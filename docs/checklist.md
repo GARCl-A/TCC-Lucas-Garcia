@@ -71,8 +71,8 @@ Ajustes finos da função objetivo.
 
 -----
 
-- [ ] refatorar o código melhorando a legibilidade & tentando igualar com o projeto
-- [ ] ampliar para várias usinas
+- [X] refatorar o código melhorando a legibilidade & tentando igualar com o projeto
+- [X] ampliar para várias usinas
 - [ ] modelar trade entre submercados diferentes ****
 - [ ] ampliar para vários submercados
 - [ ] adicionar métricas de tempo de execução da otimização
