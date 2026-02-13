@@ -165,12 +165,12 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     # q^S_a: volume de venda do trade a (MWm) - restrição: 0 ≤ q^S_a ≤ q̄^S_a
     @variable(model, 0 <= volume_venda_trade[trade in cache.trades_disponiveis] <= limite_venda_trade[trade])
     
+    # ========================================
     # Seção 4.8: Variáveis Auxiliares do CVaR
-    # η: Value-at-Risk (quantil α da distribuição de perdas)
+    # ========================================
+    # η: Value-at-Risk (quantil (1-α) dos lucros)
+    # ξ_ω: desvios acima do VaR para cada cenário
     @variable(model, VaR)
-    
-    # ξ_ω: desvio positivo da perda em relação ao VaR no cenário ω
-    # Representa quanto a perda excede o VaR em cada cenário (usado para calcular o CVaR)
     @variable(model, desvio_perda_cenario[cenario in cache.cenarios_preco] >= 0)
 
     # ========================================
@@ -234,28 +234,30 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     
     # ========================================
     # Restrições CVaR (Seção 4.8)
-    # NOTA: O documento usa formulação de MINIMIZAÇÃO de perda (L = -R)
-    # Aqui usamos MAXIMIZAÇÃO de lucro (R), que é matematicamente equivalente
-    # Por isso: desvio_perda_cenario >= VaR - lucro (ao invés de desvio >= perda - VaR)
     # ========================================
-    @constraint(model, restricao_cvar[cenario in cache.cenarios_preco], desvio_perda_cenario[cenario] >= VaR - lucro_cenario[cenario])
+    # Trabalhamos diretamente com LUCROS (não invertemos sinal)
+    # Restrição: ξ_ω ≥ η - R^ω
+    # Onde η = VaR (quantil dos piores lucros) e ξ_ω = desvio do cenário ω
+    @constraint(model, restricao_cvar[cenario in cache.cenarios_preco], 
+        desvio_perda_cenario[cenario] >= VaR - lucro_cenario[cenario])
     
     # ========================================
     # Função Objetivo (Seção 4.9)
-    # Formulação do documento: max E[R] - λ * CVaR_perda
-    # Onde CVaR_perda = η + (1/(1-α)) * E[ξ_ω]
-    # λ ∈ [0, ∞): peso da penalização de risco
-    #   λ = 0: neutro ao risco (maximiza retorno esperado)
-    #   λ > 0: avesso ao risco (penaliza cenários ruins)
-    #   λ → ∞: extremamente conservador
     # ========================================
-    # E[R^ω]: retorno esperado (média dos lucros em todos os cenários)
-    @expression(model, RetornoEsperado, sum(lucro_cenario[cenario] for cenario in cache.cenarios_preco) * probabilidade_cenario)
-    # CVaR_perda: η + (1/(1-α)) * Σ π_ω * ξ_ω
-    @expression(model, CVaR_perda, VaR + (1 / (1-alpha)) * sum(probabilidade_cenario * desvio_perda_cenario[cenario] for cenario in cache.cenarios_preco))
-    # Objetivo: max E[R] - λ * CVaR_perda
-    @objective(model, Max, RetornoEsperado - λ * CVaR_perda)
+    # Retorno Esperado: E[R] = Σ π_ω R^ω
+    @expression(model, RetornoEsperado, 
+        sum(lucro_cenario[cenario] for cenario in cache.cenarios_preco) * probabilidade_cenario)
     
+    # CVaR: η - (1/(1-α)) Σ π_ω ξ_ω
+    # Representa o lucro médio nos (1-α)% piores cenários
+    # Quanto MAIOR o CVaR, MELHOR (mais lucro nos cenários ruins)
+    @expression(model, CVaR_perda, 
+        VaR - (1 / (1-alpha)) * sum(probabilidade_cenario * desvio_perda_cenario[cenario] for cenario in cache.cenarios_preco))
+    
+    # Objetivo: max E[R] + λ * CVaR
+    # λ > 0: premia lucro nos piores cenários (aversão ao risco)
+    # λ = 0: maximiza apenas retorno esperado (neutro ao risco)
+    @objective(model, Max, RetornoEsperado + λ * CVaR_perda)    
     optimize!(model)
     
     status = termination_status(model)
@@ -323,29 +325,24 @@ function calculate_benchmark(cache::OptimizationCache, config::FrontierConfig)::
     retorno_esperado = mean(lucros_cenarios) / 1e6
     desvio_padrao = std(lucros_cenarios) / 1e6
     
-    # CVaR usando a mesma formulação do modelo de otimização
-    # CVaR_α(L) = VaR_α(L) + (1/(1-α)) * E[(L - VaR_α(L))⁺]
-    # Onde L = -R (perda = -lucro)
-    perdas_cenarios = -lucros_cenarios  # Converte lucro em perda
+    # CVaR usando a mesma formulação do modelo: CVaR = η - (1/(1-α)) * E[ξ]
+    # O modelo trabalha com: ξ >= VaR - lucro (não inverte sinal!)
+    # Então VaR é o quantil dos LUCROS (não das perdas)
     
-    # VaR: quantil α da distribuição de perdas (α-ésimo pior cenário)
-    # Para α=0.95, pegamos o 95º percentil das PERDAS (5% piores)
-    perdas_ordenadas = sort(perdas_cenarios)  # Ordena perdas (menor = melhor, maior = pior)
-    idx_var = Int(ceil(config.alpha * length(perdas_cenarios)))
-    var_value = perdas_ordenadas[idx_var]
+    # VaR: quantil (1-α) dos LUCROS (piores lucros)
+    lucros_ordenados = sort(lucros_cenarios)  # Ordena crescente (menor lucro = pior)
+    idx_var = Int(ceil((1 - config.alpha) * length(lucros_ordenados)))
+    var_value = lucros_ordenados[idx_var]  # Quantil dos piores lucros
     
-    # CVaR: média das perdas que excedem o VaR
-    desvios_positivos = max.(perdas_cenarios .- var_value, 0.0)
-    cvar_perda = (var_value + mean(desvios_positivos) / (1 - config.alpha)) / 1e6
+    # Desvios: ξ = max(VaR - lucro, 0)
+    desvios = max.(var_value .- lucros_cenarios, 0.0)
     
-    # Debug: mostra estatísticas dos lucros/perdas (apenas se DEBUG ativado)
-    # println("   [DEBUG] Lucro mínimo: R\$ $(round(minimum(lucros_cenarios)/1e6, digits=1)) Mi")
-    # println("   [DEBUG] Lucro máximo: R\$ $(round(maximum(lucros_cenarios)/1e6, digits=1)) Mi")
-    # println("   [DEBUG] Perda máxima (pior cenário): R\$ $(round(maximum(perdas_cenarios)/1e6, digits=1)) Mi")
-    # println("   [DEBUG] VaR (quantil 95%): R\$ $(round(var_value/1e6, digits=1)) Mi")
-    # println("   [DEBUG] Desvio médio acima VaR: R\$ $(round(mean(desvios_positivos)/1e6, digits=1)) Mi")
+    # CVaR = η - (1/(1-α)) * E[ξ]
+    # Interpretação: lucro médio nos (1-α)% piores cenários
+    # Quanto MAIOR, melhor (mais lucro nos cenários ruins)
+    cvar_lucro = var_value - (1 / (1 - config.alpha)) * mean(desvios)
     
-    return (retorno_esperado, cvar_perda, desvio_padrao)
+    return (retorno_esperado, cvar_lucro / 1e6, desvio_padrao)
 end
 
 function run_frontier_optimization(config::FrontierConfig, data::MarketData, cache::OptimizationCache)
@@ -354,10 +351,10 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
     # Calcula benchmark (sem otimização)
     println("\n📊 BENCHMARK (Sem Otimização):")
     bench_retorno, bench_cvar, bench_std = calculate_benchmark(cache, config)
-    println("   Retorno Esperado: R\$ $(round(bench_retorno, digits=1)) Mi")
-    println("   CVaR (5% piores): R\$ $(round(bench_cvar, digits=1)) Mi")
-    println("   Desvio Padrão:    R\$ $(round(bench_std, digits=1)) Mi")
-    println("   Volume Hedge:     0.0 MW (nenhum trade)\n")
+    println("   Retorno Esperado:  R\$ $(round(bench_retorno, digits=1)) Mi")
+    println("   CVaR (5% piores):  R\$ $(round(bench_cvar, digits=1)) Mi (lucro médio nos piores cenários - quanto MAIOR, melhor)")
+    println("   Desvio Padrão:     R\$ $(round(bench_std, digits=1)) Mi")
+    println("   Volume Hedge:      0.0 MW (nenhum trade)\n")
     
     resultados = DataFrame(Lambda=Float64[], Retorno_Milhoes=Float64[], CVaR_Perda_Milhoes=Float64[], Volume_Hedge_MW=Float64[])
     
@@ -372,11 +369,13 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
         if result.status == "OPTIMAL"
             push!(resultados, (result.lambda, result.retorno_milhoes, result.cvar_perda_milhoes, result.volume_hedge_mw))
             
-            # Calcula ganho vs benchmark
-            ganho_retorno = result.retorno_milhoes - bench_retorno
-            ganho_cvar = bench_cvar - result.cvar_perda_milhoes  # Redução de risco é positiva
+            delta_retorno = result.retorno_milhoes - bench_retorno
+            delta_cvar = result.cvar_perda_milhoes - bench_cvar  # Quanto aumentou o CVaR
             
-            println("✅ OK! (Retorno: R\$ $(round(result.retorno_milhoes, digits=1)) Mi [+$(round(ganho_retorno, digits=1))] | CVaR: R\$ $(round(result.cvar_perda_milhoes, digits=1)) Mi [$(round(ganho_cvar, digits=1))] | Hedge: $(round(result.volume_hedge_mw, digits=0)) MW)")
+            sinal_retorno = delta_retorno >= 0 ? "+" : ""
+            sinal_cvar = delta_cvar >= 0 ? "+" : ""
+            
+            println("✅ OK! Retorno: R\$ $(round(result.retorno_milhoes, digits=1)) Mi [$(sinal_retorno)$(round(delta_retorno, digits=1))] | CVaR: R\$ $(round(result.cvar_perda_milhoes, digits=1)) Mi [$(sinal_cvar)$(round(delta_cvar, digits=1))] | Hedge: $(round(result.volume_hedge_mw, digits=0)) MW")
         else
             println("❌ Falha!")
         end
@@ -398,11 +397,15 @@ function save_results(resultados::DataFrame, config::FrontierConfig)
     if nrow(resultados) > 1
         bench = resultados[1, :]
         melhor_retorno = resultados[argmax(resultados.Retorno_Milhoes), :]
-        melhor_cvar = resultados[argmin(resultados.CVaR_Perda_Milhoes), :]
+        melhor_cvar = resultados[argmax(resultados.CVaR_Perda_Milhoes), :]  # MAIOR CVaR = melhor
         
         println("\n📈 ANÁLISE DE VALOR AGREGADO:")
-        println("   Melhor Retorno: λ=$(melhor_retorno.Lambda) → +R\$ $(round(melhor_retorno.Retorno_Milhoes - bench.Retorno_Milhoes, digits=1)) Mi vs benchmark")
-        println("   Menor Risco:    λ=$(melhor_cvar.Lambda) → -R\$ $(round(bench.CVaR_Perda_Milhoes - melhor_cvar.CVaR_Perda_Milhoes, digits=1)) Mi de CVaR vs benchmark")
+        ganho_retorno = melhor_retorno.Retorno_Milhoes - bench.Retorno_Milhoes
+        ganho_cvar = melhor_cvar.CVaR_Perda_Milhoes - bench.CVaR_Perda_Milhoes  # Positivo = aumentou lucro nos piores cenários
+        
+        println("   Melhor Retorno: λ=$(melhor_retorno.Lambda) → R\$ $(round(melhor_retorno.Retorno_Milhoes, digits=1)) Mi ($(ganho_retorno >= 0 ? "+" : "")$(round(ganho_retorno, digits=1)) vs benchmark)")
+        println("   Melhor CVaR:    λ=$(melhor_cvar.Lambda) → R\$ $(round(melhor_cvar.CVaR_Perda_Milhoes, digits=1)) Mi (+$(round(ganho_cvar, digits=1)) vs benchmark)")
+        println("\n   Interpretação: CVaR = lucro médio nos 5% piores cenários (quanto MAIOR, melhor)")
     end
 end
 

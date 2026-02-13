@@ -215,11 +215,8 @@ E_{s,t}\cdot P^\omega_{s,t}
 \end{align}
 
 \subsection{Risco via CVaR (totalmente linear)}
-Definimos a perda como:
-\[
-L^\omega = -R^\omega.
-\]
-E usamos variáveis auxiliares:
+Trabalhamos diretamente com os lucros (sem inverter sinal).
+Usamos variáveis auxiliares:
 \[
 \eta \in \mathbb{R},
 \qquad
@@ -227,20 +224,25 @@ E usamos variáveis auxiliares:
 \]
 Com as restrições:
 \[
-\xi_\omega \ge L^\omega - \eta,
+\xi_\omega \ge \eta - R^\omega,
 \qquad
 \xi_\omega \ge 0,
 \qquad \forall \omega\in\Omega.
 \]
+O CVaR é definido como:
+\[
+\text{CVaR} = \eta - \frac{1}{1-\alpha}\sum_{\omega\in\Omega}\pi_\omega \xi_\omega.
+\]
+Interpretação: $\eta$ é o quantil $(1-\alpha)$ dos lucros (VaR), e o CVaR representa o lucro médio nos $(1-\alpha)\%$ piores cenários. Quanto maior o CVaR, melhor (mais lucro nos cenários ruins).
 
 \subsection{Função objetivo}
-Maximizamos lucro esperado e penalizamos risco:
+Maximizamos lucro esperado e maximizamos lucro nos piores cenários:
 \[
 \max \;\;
 \sum_{\omega\in\Omega}\pi_\omega R^\omega
--
++
 \lambda\left(
-\eta + \frac{1}{1-\alpha}\sum_{\omega\in\Omega}\pi_\omega \xi_\omega
+\eta - \frac{1}{1-\alpha}\sum_{\omega\in\Omega}\pi_\omega \xi_\omega
 \right).
 \]
 
