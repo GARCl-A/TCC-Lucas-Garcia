@@ -37,7 +37,7 @@ end
 struct OptimizationResult
     lambda::Float64
     retorno_milhoes::Float64
-    cvar_perda_milhoes::Float64
+    cvar_lucro_milhoes::Float64
     volume_hedge_mw::Float64
     status::String
 end
@@ -251,21 +251,21 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     # CVaR: η - (1/(1-α)) Σ π_ω ξ_ω
     # Representa o lucro médio nos (1-α)% piores cenários
     # Quanto MAIOR o CVaR, MELHOR (mais lucro nos cenários ruins)
-    @expression(model, CVaR_perda, 
+    @expression(model, CVaR_lucro, 
         VaR - (1 / (1-alpha)) * sum(probabilidade_cenario * desvio_perda_cenario[cenario] for cenario in cache.cenarios_preco))
     
     # Objetivo: max E[R] + λ * CVaR
     # λ > 0: premia lucro nos piores cenários (aversão ao risco)
     # λ = 0: maximiza apenas retorno esperado (neutro ao risco)
-    @objective(model, Max, RetornoEsperado + λ * CVaR_perda)    
+    @objective(model, Max, RetornoEsperado + λ * CVaR_lucro)    
     optimize!(model)
     
     status = termination_status(model)
     if status == MOI.OPTIMAL
         retorno_milhoes = value(RetornoEsperado) / 1e6
-        cvar_perda_milhoes = value(CVaR_perda) / 1e6
+        cvar_lucro_milhoes = value(CVaR_lucro) / 1e6
         volume_hedge_total = sum(value.(volume_compra_trade)) + sum(value.(volume_venda_trade))
-        return OptimizationResult(λ, retorno_milhoes, cvar_perda_milhoes, volume_hedge_total, "OPTIMAL")
+        return OptimizationResult(λ, retorno_milhoes, cvar_lucro_milhoes, volume_hedge_total, "OPTIMAL")
     else
         # Diagnóstico da falha
         println("\n   🔍 DIAGNÓSTICO DA FALHA (λ=$λ):")
@@ -356,7 +356,7 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
     println("   Desvio Padrão:     R\$ $(round(bench_std, digits=1)) Mi")
     println("   Volume Hedge:      0.0 MW (nenhum trade)\n")
     
-    resultados = DataFrame(Lambda=Float64[], Retorno_Milhoes=Float64[], CVaR_Perda_Milhoes=Float64[], Volume_Hedge_MW=Float64[])
+    resultados = DataFrame(Lambda=Float64[], Retorno_Milhoes=Float64[], CVaR_Lucro_Milhoes=Float64[], Volume_Hedge_MW=Float64[])
     
     # Adiciona benchmark como primeira linha (λ = N/A)
     push!(resultados, (NaN, bench_retorno, bench_cvar, 0.0))
@@ -367,15 +367,15 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
         result = solve_cvar_model(λ, config, data, cache)
         
         if result.status == "OPTIMAL"
-            push!(resultados, (result.lambda, result.retorno_milhoes, result.cvar_perda_milhoes, result.volume_hedge_mw))
+            push!(resultados, (result.lambda, result.retorno_milhoes, result.cvar_lucro_milhoes, result.volume_hedge_mw))
             
             delta_retorno = result.retorno_milhoes - bench_retorno
-            delta_cvar = result.cvar_perda_milhoes - bench_cvar  # Quanto aumentou o CVaR
+            delta_cvar = result.cvar_lucro_milhoes - bench_cvar  # Quanto aumentou o CVaR
             
             sinal_retorno = delta_retorno >= 0 ? "+" : ""
             sinal_cvar = delta_cvar >= 0 ? "+" : ""
             
-            println("✅ OK! Retorno: R\$ $(round(result.retorno_milhoes, digits=1)) Mi [$(sinal_retorno)$(round(delta_retorno, digits=1))] | CVaR: R\$ $(round(result.cvar_perda_milhoes, digits=1)) Mi [$(sinal_cvar)$(round(delta_cvar, digits=1))] | Hedge: $(round(result.volume_hedge_mw, digits=0)) MW")
+            println("✅ OK! Retorno: R\$ $(round(result.retorno_milhoes, digits=1)) Mi [$(sinal_retorno)$(round(delta_retorno, digits=1))] | CVaR: R\$ $(round(result.cvar_lucro_milhoes, digits=1)) Mi [$(sinal_cvar)$(round(delta_cvar, digits=1))] | Hedge: $(round(result.volume_hedge_mw, digits=0)) MW")
         else
             println("❌ Falha!")
         end
@@ -397,14 +397,14 @@ function save_results(resultados::DataFrame, config::FrontierConfig)
     if nrow(resultados) > 1
         bench = resultados[1, :]
         melhor_retorno = resultados[argmax(resultados.Retorno_Milhoes), :]
-        melhor_cvar = resultados[argmax(resultados.CVaR_Perda_Milhoes), :]  # MAIOR CVaR = melhor
+        melhor_cvar = resultados[argmax(resultados.CVaR_Lucro_Milhoes), :]  # MAIOR CVaR = melhor
         
         println("\n📈 ANÁLISE DE VALOR AGREGADO:")
         ganho_retorno = melhor_retorno.Retorno_Milhoes - bench.Retorno_Milhoes
-        ganho_cvar = melhor_cvar.CVaR_Perda_Milhoes - bench.CVaR_Perda_Milhoes  # Positivo = aumentou lucro nos piores cenários
+        ganho_cvar = melhor_cvar.CVaR_Lucro_Milhoes - bench.CVaR_Lucro_Milhoes  # Positivo = aumentou lucro nos piores cenários
         
         println("   Melhor Retorno: λ=$(melhor_retorno.Lambda) → R\$ $(round(melhor_retorno.Retorno_Milhoes, digits=1)) Mi ($(ganho_retorno >= 0 ? "+" : "")$(round(ganho_retorno, digits=1)) vs benchmark)")
-        println("   Melhor CVaR:    λ=$(melhor_cvar.Lambda) → R\$ $(round(melhor_cvar.CVaR_Perda_Milhoes, digits=1)) Mi (+$(round(ganho_cvar, digits=1)) vs benchmark)")
+        println("   Melhor CVaR:    λ=$(melhor_cvar.Lambda) → R\$ $(round(melhor_cvar.CVaR_Lucro_Milhoes, digits=1)) Mi (+$(round(ganho_cvar, digits=1)) vs benchmark)")
         println("\n   Interpretação: CVaR = lucro médio nos 5% piores cenários (quanto MAIOR, melhor)")
     end
 end
