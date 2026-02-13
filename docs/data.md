@@ -70,7 +70,7 @@ Estes valores não vêm de arquivos, são "botões" que ajustamos no código par
 | Símbolo | Descrição | Onde está o dado? | Valor Típico / Configuração |
 | :---: | :--- | :--- | :--- |
 | $\alpha$ | **Nível de Confiança do CVaR** | 💻 **No Código** | **0.95 (95%):** Indica que estamos olhando para a média dos 5% piores cenários. |
-| $\lambda$ | **Aversão ao Risco** | 💻 **No Código** | **Variável $[0, \infty)$:** Peso dado ao risco na função objetivo.<br>$\lambda=0$: Neutro ao risco (Maximiza Lucro Médio).<br>$\lambda>0$: Conservador (Sacrifica lucro para reduzir risco). |
+| $\lambda$ | **Aversão ao Risco** | 💻 **No Código** | **Variável $[0, \infty)$:** Peso dado ao risco na função objetivo.<br>$\lambda=0$: Neutro ao risco (Maximiza Lucro Médio).<br>$\lambda>0$: Conservador (Premia lucro nos piores cenários). |
 
 ---
 
@@ -255,48 +255,51 @@ O CVaR (Conditional Value-at-Risk) é implementado através de variáveis auxili
 ### Variáveis Auxiliares:
 
 ```julia
-# η: Value-at-Risk (quantil α da distribuição de perdas)
+# η: Value-at-Risk (quantil (1-α) dos lucros)
 @variable(model, VaR)
-# ξ_ω: desvio positivo da perda em relação ao VaR no cenário ω
+# ξ_ω: desvio acima do VaR para cada cenário
 @variable(model, desvio_perda_cenario[cenario in cache.cenarios_preco] >= 0)
 ```
 
 ### Restrições:
 
 ```julia
-# Para cada cenário: ξ_ω >= η - R^ω (ou equivalentemente: ξ_ω >= L^ω - η, onde L = -R)
+# Para cada cenário: ξ_ω >= η - R^ω
 @constraint(model, restricao_cvar[cenario in cache.cenarios_preco], 
     desvio_perda_cenario[cenario] >= VaR - lucro_cenario[cenario])
 ```
 
 **Nota Importante:**
-- O documento usa formulação de **minimização de perda** (L = -R)
-- O código usa **maximização de lucro** (R), que é matematicamente equivalente
-- Por isso: `desvio_perda_cenario >= VaR - lucro` (ao invés de `desvio >= perda - VaR`)
+- O modelo trabalha diretamente com **LUCROS** (não inverte sinal)
+- η = VaR dos lucros (quantil dos piores lucros)
+- ξ_ω = quanto o cenário fica abaixo do VaR
+- CVaR = lucro médio nos piores cenários (quanto MAIOR, melhor)
 
 ---
 
 ## 5️⃣ Função Objetivo (Seção 4.9)
 
-A função objetivo combina retorno esperado e penalização de risco:
+A função objetivo combina retorno esperado e premia lucro nos piores cenários:
 
 ```julia
 # E[R^ω]: retorno esperado (média dos lucros em todos os cenários)
 @expression(model, RetornoEsperado, 
     sum(lucro_cenario[cenario] for cenario in cache.cenarios_preco) * probabilidade_cenario)
 
-# CVaR_perda: η + (1/(1-α)) * Σ π_ω * ξ_ω
-@expression(model, CVaR_perda, 
-    VaR + (1 / (1-alpha)) * sum(probabilidade_cenario * desvio_perda_cenario[cenario] for cenario in cache.cenarios_preco))
+# CVaR_lucro: η - (1/(1-α)) * Σ π_ω * ξ_ω
+# Representa o lucro médio nos (1-α)% piores cenários
+# Quanto MAIOR o CVaR, MELHOR (mais lucro nos cenários ruins)
+@expression(model, CVaR_lucro, 
+    VaR - (1 / (1-alpha)) * sum(probabilidade_cenario * desvio_perda_cenario[cenario] for cenario in cache.cenarios_preco))
 
-# Objetivo: max E[R] - λ * CVaR_perda
-@objective(model, Max, RetornoEsperado - λ * CVaR_perda)
+# Objetivo: max E[R] + λ * CVaR
+@objective(model, Max, RetornoEsperado + λ * CVaR_lucro)
 ```
 
 **Interpretação dos Parâmetros:**
 - **λ = 0**: Neutro ao risco (maximiza retorno esperado)
-- **λ > 0**: Avesso ao risco (penaliza cenários ruins)
-- **λ → ∞**: Extremamente conservador (minimiza perdas nos piores cenários)
+- **λ > 0**: Avesso ao risco (premia lucro nos piores cenários)
+- **λ → ∞**: Extremamente conservador (maximiza lucro nos piores cenários)
 
 **Fronteira Eficiente:**
 Variando λ de 0 a valores altos, obtemos diferentes pontos da fronteira risco-retorno.
@@ -393,5 +396,5 @@ end
 - Arquivo `resultados_fronteira.csv` com colunas:
   - `Lambda`: Peso do risco
   - `Retorno_Milhoes`: Retorno esperado (R$ milhões)
-  - `CVaR_Perda_Milhoes`: CVaR da perda (R$ milhões)
+  - `CVaR_Lucro_Milhoes`: CVaR do lucro (R$ milhões) - lucro médio nos 5% piores cenários
   - `Volume_Hedge_MW`: Volume total de hedge (MW médio)
