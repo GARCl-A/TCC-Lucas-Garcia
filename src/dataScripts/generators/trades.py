@@ -4,12 +4,12 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_DIR = os.path.join(BASE_DIR, "../../..", "data", "processed")
 
-SPREAD = 0.05
+SPREAD = 0.01  # 1% de spread (mais realista para mercado de energia)
 LIMITE_LOTE = 20.0
 
 
 def gerar_trades():
-    print("💰 Iniciando a Mesa de Operações (Geração de Trades)...")
+    print("Iniciando a Mesa de Operacoes (Geracao de Trades)...")
 
     path_cenarios = os.path.join(PROCESSED_DIR, "cenarios_final.csv")
 
@@ -25,6 +25,8 @@ def gerar_trades():
 
     print("   Curva Forward calculada. Criando spreads...")
 
+    print(f"\nGerando trades com SPREAD = {SPREAD*100}%")
+
     trades = []
 
     for _, row in curva_forward.iterrows():
@@ -35,8 +37,12 @@ def gerar_trades():
                 {
                     "data": row["data"],
                     "submercado": row["submercado"],
-                    "preco_compra": round(preco_medio * (1 + SPREAD), 2),
-                    "preco_venda": round(preco_medio * (1 - SPREAD), 2),
+                    "preco_compra": round(
+                        preco_medio * (1 + SPREAD), 2
+                    ),  # Ask: você compra mais caro
+                    "preco_venda": round(
+                        preco_medio * (1 - SPREAD), 2
+                    ),  # Bid: você vende mais barato
                     "limite_compra": LIMITE_LOTE,
                     "limite_venda": LIMITE_LOTE,
                 }
@@ -55,8 +61,8 @@ def gerar_trades():
     medio = exemplo["preco_compra"] / (1 + SPREAD)
     print(f"Data: {exemplo['data'].date()}")
     print(f"Preço Esperado (NEWAVE): R$ {medio:.2f}")
-    print(f"Preço Tela Compra (+5%): R$ {exemplo['preco_compra']:.2f}")
-    print(f"Preço Tela Venda  (-5%): R$ {exemplo['preco_venda']:.2f}")
+    print(f"Preço Tela Compra (+{SPREAD*100}%): R$ {exemplo['preco_compra']:.2f}")
+    print(f"Preço Tela Venda  (-{SPREAD*100}%): R$ {exemplo['preco_venda']:.2f}")
 
 
 if __name__ == "__main__":

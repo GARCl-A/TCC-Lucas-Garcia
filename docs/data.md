@@ -71,3 +71,327 @@ Estes valores não vêm de arquivos, são "botões" que ajustamos no código par
 | :---: | :--- | :--- | :--- |
 | $\alpha$ | **Nível de Confiança do CVaR** | 💻 **No Código** | **0.95 (95%):** Indica que estamos olhando para a média dos 5% piores cenários. |
 | $\lambda$ | **Aversão ao Risco** | 💻 **No Código** | **Variável $[0, \infty)$:** Peso dado ao risco na função objetivo.<br>$\lambda=0$: Neutro ao risco (Maximiza Lucro Médio).<br>$\lambda>0$: Conservador (Sacrifica lucro para reduzir risco). |
+
+---
+
+# 💻 Documentação do Código de Otimização
+
+## Arquivo: `deterministico_equivalente.jl`
+
+Este arquivo implementa o modelo de otimização estocástica com CVaR descrito na Seção 4 do documento `Projeto.tex`.
+
+---
+
+## 1️⃣ Conjuntos do Modelo (Seção 4.2)
+
+Os conjuntos matemáticos são implementados como estruturas de dados Julia:
+
+| Símbolo Matemático | Nome no Código | Tipo | Descrição | Onde é Construído |
+|:---:|:---|:---|:---|:---|
+| $\mathcal{S}$ | `submercados` | `Vector{String}` | Lista de submercados (ex: "SE", "S", "NE", "N") | `build_optimization_cache()` |
+| $\mathcal{T}^F$ | `meses_futuros` | `Vector{Date}` | Datas mensais do horizonte de estudo (ordenadas) | `build_optimization_cache()` |
+| $\mathcal{A}$ | `trades_disponiveis` | `UnitRange{Int}` | Índices dos trades candidatos (1:N, onde N = número de linhas em `trades.csv`) | `build_optimization_cache()` |
+| $\Omega$ | `cenarios_preco` | `UnitRange{Int}` | Índices dos cenários estocásticos (1:2000) | `build_optimization_cache()` |
+
+### Código de Construção:
+
+```julia
+function build_optimization_cache(data::MarketData)::OptimizationCache
+    # Extração dos conjuntos a partir dos dados carregados
+    meses_futuros = sort(unique(data.cenarios.data))           # 𝒯^F
+    submercados = unique(data.cenarios.submercado)             # 𝒮
+    trades_disponiveis = 1:nrow(data.trades)                   # 𝒜
+    num_cenarios = maximum(data.cenarios.cenario)              # |Ω|
+    cenarios_preco = 1:num_cenarios                            # Ω
+    
+    # ... resto da função
+end
+```
+
+
+
+---
+
+## 2️⃣ Parâmetros do Modelo (Seção 4.3)
+
+Os parâmetros matemáticos são extraídos dos dados e armazenados no `OptimizationCache`:
+
+| Símbolo Matemático | Nome no Código | Tipo | Descrição | Onde é Construído |
+|:---:|:---|:---|:---|:---|
+| $\pi_\omega$ | `probabilidade_cenario` | `Float64` | Probabilidade de cada cenário (1/2000) | `build_optimization_cache()` |
+| $P^\omega_{s,t}$ | `pld_cenario` | `Dict{(Date,String,Int), Float64}` | PLD por (mês, submercado, cenário) | `build_optimization_cache()` |
+| $G_{s,t}$ | `producao_usina` | `Dict{(Date,Int), Float64}` | Geração da usina por (mês, código_usina) | `build_optimization_cache()` |
+| $Q^{0,B}_{s,t}$ | `volume_compra_existente` | `Dict{(Date,String), Float64}` | Volume de compras já existentes por (mês, submercado) | `build_optimization_cache()` |
+| $Q^{0,S}_{s,t}$ | `volume_venda_existente` | `Dict{(Date,String), Float64}` | Volume de vendas já existentes por (mês, submercado) | `build_optimization_cache()` |
+| $K^{0,B}_{s,t}$ | `preco_compra_existente` | `Dict{(Date,String), Float64}` | Preço médio ponderado das compras existentes | `build_optimization_cache()` |
+| $K^{0,S}_{s,t}$ | `preco_venda_existente` | `Dict{(Date,String), Float64}` | Preço médio ponderado das vendas existentes | `build_optimization_cache()` |
+| $K^B_a$ | `preco_compra_trade` | `Vector{Float64}` | Preço de compra do trade `a` | `solve_cvar_model()` |
+| $K^S_a$ | `preco_venda_trade` | `Vector{Float64}` | Preço de venda do trade `a` | `solve_cvar_model()` |
+| $\overline{q}^B_a$ | `limite_compra_trade` | `Vector{Float64}` | Limite máximo de compra do trade `a` | `solve_cvar_model()` |
+| $\overline{q}^S_a$ | `limite_venda_trade` | `Vector{Float64}` | Limite máximo de venda do trade `a` | `solve_cvar_model()` |
+| $\alpha$ | `alpha` | `Float64` | Nível de confiança do CVaR (0.95) | `FrontierConfig` |
+| $\lambda$ | `λ` | `Float64` | Peso do risco (parâmetro variável) | Argumento de `solve_cvar_model()` |
+
+### Código de Extração dos Contratos Existentes:
+
+```julia
+# Extração de volumes e preços dos contratos já existentes
+for t in meses_futuros, s in submercados
+    contratos_mes = filter(row -> row.data == t && row.submercado == s, data.contratos_existentes)
+    
+    # Contratos de COMPRA
+    compras = filter(row -> row.tipo == "COMPRA", contratos_mes)
+    if nrow(compras) > 0
+        volume_compra_existente[(t,s)] = sum(compras.volume_mwm)
+        # Preço médio ponderado pelo volume
+        preco_compra_existente[(t,s)] = sum(compras.volume_mwm .* compras.preco_r_mwh) / sum(compras.volume_mwm)
+    else
+        volume_compra_existente[(t,s)] = 0.0
+        preco_compra_existente[(t,s)] = 0.0
+    end
+    
+    # Contratos de VENDA (análogo)
+    # ...
+end
+```
+
+### Observações:
+- **Preço Médio Ponderado:** Quando há múltiplos contratos no mesmo (mês, submercado), calcula-se a média ponderada pelo volume
+- **Valores Padrão:** Se não há contratos de um tipo, volume e preço são definidos como 0.0
+- **Fonte dos Dados:** Arquivo `contratos_legacy.csv` contém as colunas `volume_mwm` e `preco_r_mwh`
+
+---
+
+## 3️⃣ Cálculo do Lucro por Cenário (Seção 4.7)
+
+O lucro é calculado em **3 partes**, conforme a formulação matemática:
+
+### Parte 1: Lucro dos Contratos Já Existentes (Constante)
+
+```julia
+lucro_contratos_existentes = 0.0
+for mes in cache.meses_futuros, submercado in cache.submercados
+    horas_no_mes = horas_mes(mes)
+    # K^{0,S}_{s,t} * Q^{0,S}_{s,t}: receita das vendas existentes
+    receita_venda = get(cache.preco_venda_existente, (mes,submercado), 0.0) * get(cache.volume_venda_existente, (mes,submercado), 0.0) * horas_no_mes
+    # K^{0,B}_{s,t} * Q^{0,B}_{s,t}: custo das compras existentes
+    custo_compra = get(cache.preco_compra_existente, (mes,submercado), 0.0) * get(cache.volume_compra_existente, (mes,submercado), 0.0) * horas_no_mes
+    lucro_contratos_existentes += receita_venda - custo_compra
+end
+```
+
+**Características:**
+- ✅ Valor **constante** (não depende das variáveis de decisão)
+- ✅ Representa obrigações contratuais pré-existentes
+- ✅ Não afeta a solução ótima, mas é importante para o lucro total real
+
+### Parte 2: Lucro dos Novos Trades (Variável de Decisão)
+
+```julia
+lucro_novos_trades = AffExpr(0.0)
+for trade in cache.trades_disponiveis
+    horas_no_mes = horas_mes(data.trades.data[trade])
+    # K^S_a * q^S_a - K^B_a * q^B_a
+    add_to_expression!(lucro_novos_trades, 
+        (volume_venda_trade[trade] * preco_venda_trade[trade] - volume_compra_trade[trade] * preco_compra_trade[trade]) * horas_no_mes)
+end
+```
+
+**Características:**
+- ✅ Depende das **variáveis de decisão** `volume_compra_trade[a]` e `volume_venda_trade[a]`
+- ✅ Representa as decisões de hedge que o modelo otimiza
+
+### Parte 3: Lucro da Exposição ao PLD (Estocástico)
+
+```julia
+# Inicializa lucro_cenario com as partes 1 e 2
+@expression(model, lucro_cenario[cenario in cache.cenarios_preco], lucro_contratos_existentes + lucro_novos_trades)
+
+# Adiciona a parte estocástica (exposição ao PLD)
+for mes in cache.meses_futuros, submercado in cache.submercados
+    horas_no_mes = horas_mes(mes)
+    # G_{s,t}: produção da usina
+    producao = (submercado == "SE" ? get(cache.producao_usina, (mes, 202), 0.0) : 0.0)
+    # Q^{0,B}_{s,t}: compras já existentes
+    compra_existente = get(cache.volume_compra_existente, (mes,submercado), 0.0)
+    # Q^{0,S}_{s,t}: vendas já existentes
+    venda_existente = get(cache.volume_venda_existente, (mes,submercado), 0.0)
+    
+    # Agregação dos volumes dos novos trades (Seção 4.5)
+    indices_trades_mes_submercado = cache.indices_trades_por_mes_submercado[(mes,submercado)]
+    volume_compra_agregado = isempty(indices_trades_mes_submercado) ? AffExpr(0.0) : sum(volume_compra_trade[trade] for trade in indices_trades_mes_submercado)
+    volume_venda_agregado = isempty(indices_trades_mes_submercado) ? AffExpr(0.0) : sum(volume_venda_trade[trade] for trade in indices_trades_mes_submercado)
+    
+    # E^{ω}_{s,t}: Exposição ao PLD (Seção 4.6)
+    # E = G + Q^{0,B} + Q^{B} - Q^{0,S} - Q^{S}
+    exposicao_pld = producao + compra_existente + volume_compra_agregado - venda_existente - volume_venda_agregado
+    
+    # Para cada cenário, adiciona: E * P^ω_{s,t}
+    for cenario in cache.cenarios_preco
+        pld = get(cache.pld_cenario, (mes, submercado, cenario), 0.0)
+        add_to_expression!(lucro_cenario[cenario], exposicao_pld * horas_no_mes * pld)
+    end
+end
+```
+
+**Características:**
+- ✅ Valor **estocástico** (varia por cenário)
+- ✅ Representa o risco de mercado (incerteza do PLD)
+- ✅ É a razão pela qual o CVaR é necessário
+
+### Lucro Total por Cenário:
+
+```julia
+lucro_cenario[ω] = Parte1 + Parte2 + Parte3
+                 = lucro_contratos_existentes + lucro_novos_trades + exposicao_pld * PLD^ω
+```
+
+---
+
+## 4️⃣ Restrições CVaR (Seção 4.8)
+
+O CVaR (Conditional Value-at-Risk) é implementado através de variáveis auxiliares e restrições lineares:
+
+### Variáveis Auxiliares:
+
+```julia
+# η: Value-at-Risk (quantil α da distribuição de perdas)
+@variable(model, VaR)
+# ξ_ω: desvio positivo da perda em relação ao VaR no cenário ω
+@variable(model, desvio_perda_cenario[cenario in cache.cenarios_preco] >= 0)
+```
+
+### Restrições:
+
+```julia
+# Para cada cenário: ξ_ω >= η - R^ω (ou equivalentemente: ξ_ω >= L^ω - η, onde L = -R)
+@constraint(model, restricao_cvar[cenario in cache.cenarios_preco], 
+    desvio_perda_cenario[cenario] >= VaR - lucro_cenario[cenario])
+```
+
+**Nota Importante:**
+- O documento usa formulação de **minimização de perda** (L = -R)
+- O código usa **maximização de lucro** (R), que é matematicamente equivalente
+- Por isso: `desvio_perda_cenario >= VaR - lucro` (ao invés de `desvio >= perda - VaR`)
+
+---
+
+## 5️⃣ Função Objetivo (Seção 4.9)
+
+A função objetivo combina retorno esperado e penalização de risco:
+
+```julia
+# E[R^ω]: retorno esperado (média dos lucros em todos os cenários)
+@expression(model, RetornoEsperado, 
+    sum(lucro_cenario[cenario] for cenario in cache.cenarios_preco) * probabilidade_cenario)
+
+# CVaR_perda: η + (1/(1-α)) * Σ π_ω * ξ_ω
+@expression(model, CVaR_perda, 
+    VaR + (1 / (1-alpha)) * sum(probabilidade_cenario * desvio_perda_cenario[cenario] for cenario in cache.cenarios_preco))
+
+# Objetivo: max E[R] - λ * CVaR_perda
+@objective(model, Max, RetornoEsperado - λ * CVaR_perda)
+```
+
+**Interpretação dos Parâmetros:**
+- **λ = 0**: Neutro ao risco (maximiza retorno esperado)
+- **λ > 0**: Avesso ao risco (penaliza cenários ruins)
+- **λ → ∞**: Extremamente conservador (minimiza perdas nos piores cenários)
+
+**Fronteira Eficiente:**
+Variando λ de 0 a valores altos, obtemos diferentes pontos da fronteira risco-retorno.
+
+---
+
+## 6️⃣ Estrutura de Cache para Otimização
+
+Para evitar reprocessamento a cada iteração de λ, pré-computamos estruturas auxiliares:
+
+```julia
+struct OptimizationCache
+    meses_futuros::Vector{Date}
+    submercados::Vector{String}
+    trades_disponiveis::UnitRange{Int}
+    cenarios_preco::UnitRange{Int}
+    num_cenarios::Int
+    probabilidade_cenario::Float64
+    pld_cenario::Dict{Tuple{Date,String,Int}, Float64}
+    producao_usina::Dict{Tuple{Date,Int}, Float64}
+    volume_compra_existente::Dict{Tuple{Date,String}, Float64}
+    volume_venda_existente::Dict{Tuple{Date,String}, Float64}
+    preco_compra_existente::Dict{Tuple{Date,String}, Float64}
+    preco_venda_existente::Dict{Tuple{Date,String}, Float64}
+    indices_trades_por_mes_submercado::Dict{Tuple{Date,String}, Vector{Int}}
+end
+```
+
+**Benefícios:**
+- ✅ Evita filtrar DataFrames repetidamente
+- ✅ Acesso O(1) aos dados via dicionários
+- ✅ Pré-computa índices de trades por (mês, submercado)
+- ✅ Reduz tempo de execução da fronteira eficiente
+
+---
+
+## 7️⃣ Validações e Tratamento de Dados
+
+### Limites Regulatórios do PLD
+
+O arquivo `PLD_min_max_2017_2026.csv` contém os limites anuais definidos pela ANEEL:
+
+```julia
+# Durante o processamento dos cenários (em outro arquivo)
+for row in eachrow(cenarios)
+    ano = year(row.data)
+    limite = filter(r -> r.ano == ano, limites_pld)
+    
+    # Clipping: força PLD a respeitar [piso, teto]
+    pld_ajustado = clamp(row.valor, limite.piso, limite.teto)
+end
+```
+
+**Fonte:** [CCEE - Conceitos de Preços](https://www.ccee.org.br/precos/conceitos-precos)
+
+### Preço Médio Ponderado de Contratos
+
+Quando há múltiplos contratos no mesmo (mês, submercado):
+
+```julia
+if nrow(compras) > 0
+    volume_total = sum(compras.volume_mwm)
+    preco_medio = sum(compras.volume_mwm .* compras.preco_r_mwh) / volume_total
+else
+    volume_total = 0.0
+    preco_medio = 0.0
+end
+```
+
+---
+
+## 8️⃣ Fluxo de Execução
+
+```julia
+function main()
+    # 1. Carrega configuração (α, λs, diretórios)
+    config = load_frontier_config()
+    
+    # 2. Carrega dados de mercado (cenários, trades, contratos, geração)
+    data = load_market_data(config)
+    
+    # 3. Pré-processa e constrói cache de otimização
+    cache = build_optimization_cache(data)
+    
+    # 4. Loop da fronteira eficiente (varia λ)
+    resultados = run_frontier_optimization(config, data, cache)
+    
+    # 5. Salva resultados em CSV
+    save_results(resultados, config)
+end
+```
+
+**Saída:**
+- Arquivo `resultados_fronteira.csv` com colunas:
+  - `Lambda`: Peso do risco
+  - `Retorno_Milhoes`: Retorno esperado (R$ milhões)
+  - `CVaR_Perda_Milhoes`: CVaR da perda (R$ milhões)
+  - `Volume_Hedge_MW`: Volume total de hedge (MW médio)
