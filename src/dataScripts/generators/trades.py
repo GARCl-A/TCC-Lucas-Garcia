@@ -5,7 +5,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_DIR = os.path.join(BASE_DIR, "../../..", "data", "processed")
 
 SPREAD = 0.01  # 1% de spread (mais realista para mercado de energia)
-LIMITE_LOTE = 20.0
+LIMITE_LOTE = 100
 
 
 def gerar_trades():
