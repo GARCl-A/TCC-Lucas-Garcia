@@ -73,8 +73,9 @@ Ajustes finos da função objetivo.
 
 - [X] refatorar o código melhorando a legibilidade & tentando igualar com o projeto
 - [X] ampliar para várias usinas
-- [ ] modelar trade entre submercados diferentes ****
-- [ ] ampliar para vários submercados
+- [X] ampliar para vários submercados
+- [N/A] modelar trade entre submercados diferentes ****
+    - "Contratos são liquidados localmente por submercado, não havendo arbitragem física entre eles"
 - [ ] adicionar métricas de tempo de execução da otimização
 
 - [ ] comparar com os outros trabalhos
@@ -88,4 +89,15 @@ Ajustes finos da função objetivo.
 
 - FUTURO:
     - [ ] Amplicar o escopo pra POV da comercializadora
-    - [ ] Checar como os preços de contrato (futuro) são feitos 
+    - [ ] Checar como os preços de contrato (futuro) são feitos
+
+-----------------
+- [X] Implementar modelo determinístico equivalente
+- [X] Refatorar código
+- [X] Ampliar para várias usinas
+- [X] Ampliar para vários submercados
+- [N/A] Trade entre submercados
+- [ ] ⏱️ Métricas de tempo ← **PRÓXIMO**
+- [ ] 📊 Gerar gráficos/visualizações
+- [ ] 📚 Comparar com literatura
+- [ ] 🎯 SDDP (opcional)
