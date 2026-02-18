@@ -41,15 +41,16 @@ struct OptimizationResult
     retorno_milhoes::Float64
     cvar_lucro_milhoes::Float64
     volume_hedge_mw::Float64
+    tempo_segundos::Float64
     status::String
-    model::Union{Model, Nothing}  # Armazena o modelo otimizado
+    model::Union{Model, Nothing}
 end
 
 function load_frontier_config()
     return FrontierConfig(
         joinpath(@__DIR__, "../..", "data", "processed"),
         0.95,
-        [0.0, 0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99]
+        [0.001, 0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99,1.0]
     )
 end
 
@@ -282,7 +283,9 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     # λ = 0: maximiza apenas retorno esperado (neutro ao risco)
     @objective(model, Max, RetornoEsperado + λ * CVaR_lucro)
     print("\r   Otimizando...")
+    tempo_inicio = time()
     optimize!(model)
+    tempo_otimizacao = time() - tempo_inicio
     print("\r   ")
     
     status = termination_status(model)
@@ -291,13 +294,16 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
         cvar_lucro_milhoes = value(CVaR_lucro) / 1e6
         volume_hedge_total = sum(value.(volume_compra_trade)) + sum(value.(volume_venda_trade))
         
-        # Debug: mostrar trades executados quando λ=0
-        if λ == 0.0
-            trades_executados = sum(value.(volume_compra_trade) .> 0.01) + sum(value.(volume_venda_trade) .> 0.01)
-            println("\n   [DEBUG λ=0.0] Trades executados: $trades_executados de $(length(cache.trades_disponiveis))")
-        end
+        # Debug CVaR
+        var_value = value(VaR) / 1e6
+        esperanca_desvios = sum(probabilidade_cenario * value(desvio_perda_cenario[c]) for c in cache.cenarios_preco) / 1e6
+        println("   [DEBUG OPT λ=$λ] VaR: $(round(var_value, digits=1)) Mi | E[ξ]: $(round(esperanca_desvios, digits=1)) Mi | CVaR: $(round(cvar_lucro_milhoes, digits=1)) Mi")
         
-        return OptimizationResult(λ, retorno_milhoes, cvar_lucro_milhoes, volume_hedge_total, "OPTIMAL", model)
+        # Debug: mostrar trades executados
+        trades_executados = sum(value.(volume_compra_trade) .> 0.01) + sum(value.(volume_venda_trade) .> 0.01)
+        println("   [DEBUG OPT λ=$λ] Trades executados: $trades_executados de $(length(cache.trades_disponiveis))")
+        
+        return OptimizationResult(λ, retorno_milhoes, cvar_lucro_milhoes, volume_hedge_total, tempo_otimizacao, "OPTIMAL", model)
     else
         # Diagnóstico da falha
         println("\n   🔍 DIAGNÓSTICO DA FALHA (λ=$λ):")
@@ -318,7 +324,7 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
             println("   Detalhes: $(raw_status(model))")
         end
         
-        return OptimizationResult(λ, 0.0, 0.0, 0.0, "FAILED", nothing)
+        return OptimizationResult(λ, 0.0, 0.0, 0.0, 0.0, "FAILED", nothing)
     end
 end
 
@@ -388,6 +394,9 @@ function calculate_benchmark(cache::OptimizationCache, config::FrontierConfig)::
     # Quanto MAIOR, melhor (mais lucro nos cenários ruins)
     cvar_lucro = var_value - (1 / (1 - config.alpha)) * mean(desvios)
     
+    # Debug CVaR
+    println("   [DEBUG BENCH] VaR: $(round(var_value/1e6, digits=1)) Mi | E[ξ]: $(round(mean(desvios)/1e6, digits=1)) Mi | CVaR: $(round(cvar_lucro/1e6, digits=1)) Mi")
+    
     return (retorno_esperado, cvar_lucro / 1e6, desvio_padrao)
 end
 
@@ -402,10 +411,10 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
     println("   Desvio Padrão:     R\$ $(round(bench_std, digits=1)) Mi")
     println("   Volume Hedge:      0.0 MW (nenhum trade)\n")
     
-    resultados = DataFrame(Lambda=Float64[], Retorno_Milhoes=Float64[], CVaR_Lucro_Milhoes=Float64[], Volume_Hedge_MW=Float64[])
+    resultados = DataFrame(Lambda=Float64[], Retorno_Milhoes=Float64[], CVaR_Lucro_Milhoes=Float64[], Volume_Hedge_MW=Float64[], Tempo_Segundos=Float64[])
     
     # Adiciona benchmark como primeira linha (λ = N/A)
-    push!(resultados, (NaN, bench_retorno, bench_cvar, 0.0))
+    push!(resultados, (NaN, bench_retorno, bench_cvar, 0.0, 0.0))
     
     for λ in config.lambdas
         print("⚡ Otimizando λ = $λ ... ")
@@ -413,7 +422,7 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
         result = solve_cvar_model(λ, config, data, cache)
         
         if result.status == "OPTIMAL"
-            push!(resultados, (result.lambda, result.retorno_milhoes, result.cvar_lucro_milhoes, result.volume_hedge_mw))
+            push!(resultados, (result.lambda, result.retorno_milhoes, result.cvar_lucro_milhoes, result.volume_hedge_mw, result.tempo_segundos))
             
             delta_retorno = result.retorno_milhoes - bench_retorno
             delta_cvar = result.cvar_lucro_milhoes - bench_cvar  # Quanto aumentou o CVaR
@@ -421,7 +430,7 @@ function run_frontier_optimization(config::FrontierConfig, data::MarketData, cac
             sinal_retorno = delta_retorno >= 0 ? "+" : ""
             sinal_cvar = delta_cvar >= 0 ? "+" : ""
             
-            println("✅ OK! Retorno: R\$ $(round(result.retorno_milhoes, digits=1)) Mi [$(sinal_retorno)$(round(delta_retorno, digits=1))] | CVaR: R\$ $(round(result.cvar_lucro_milhoes, digits=1)) Mi [$(sinal_cvar)$(round(delta_cvar, digits=1))] | Hedge: $(round(result.volume_hedge_mw, digits=0)) MW")
+            println("✅ OK! Retorno: R\$ $(round(result.retorno_milhoes, digits=1)) Mi [$(sinal_retorno)$(round(delta_retorno, digits=1))] | CVaR: R\$ $(round(result.cvar_lucro_milhoes, digits=1)) Mi [$(sinal_cvar)$(round(delta_cvar, digits=1))] | Hedge: $(round(result.volume_hedge_mw, digits=0)) MW | Tempo: $(round(result.tempo_segundos, digits=2))s")
         else
             println("❌ Falha!")
         end
