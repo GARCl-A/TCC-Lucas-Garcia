@@ -97,10 +97,7 @@ Ajustes finos da função objetivo.
 - [X] Ampliar para várias usinas
 - [X] Ampliar para vários submercados
 - [N/A] Trade entre submercados
-- [X] ⏱️ Métricas de tempo ← **PRÓXIMO**
-- [X] 📊 Gerar gráficos/visualizações
-- [] Fazer o código de geração de energia ser estocastico.
-- [] Usar multiplos cenários de geração de energia
-- [] Fazer com que os trades sejam em lotes
+- [ ] ⏱️ Métricas de tempo ← **PRÓXIMO**
+- [ ] 📊 Gerar gráficos/visualizações
 - [ ] 📚 Comparar com literatura
 - [ ] 🎯 SDDP (opcional)
