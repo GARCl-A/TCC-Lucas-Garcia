@@ -58,7 +58,7 @@ function load_market_data(config::FrontierConfig)::MarketData
     println("🔥 Carregando dados do mercado...")
     
     cenarios = CSV.read(joinpath(config.data_dir, "cenarios_final.csv"), DataFrame)
-    geracao = CSV.read(joinpath(config.data_dir, "geracao.csv"), DataFrame)
+    geracao = CSV.read(joinpath(config.data_dir, "geracao_estocastica.csv"), DataFrame)
     contratos_existentes = CSV.read(joinpath(config.data_dir, "contratos_legacy.csv"), DataFrame)
     trades = CSV.read(joinpath(config.data_dir, "trades.csv"), DataFrame)
     
@@ -87,7 +87,7 @@ function build_optimization_cache(data::MarketData)::OptimizationCache
     # ========================================
     probabilidade_cenario = 1.0 / num_cenarios
     pld_cenario = Dict((r.data, r.submercado, r.cenario) => r.valor for r in eachrow(data.cenarios))
-    producao_usina = Dict((r.data, r.usina_cod) => r.geracao_mwm for r in eachrow(data.geracao))
+    producao_usina = Dict((r.data, r.usina_cod, r.cenario) => r.geracao_mwm for r in eachrow(data.geracao))
     
     # Extrai usinas e seus submercados
     usinas = unique(data.geracao.usina_cod)
@@ -215,35 +215,31 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     
     for mes in cache.meses_futuros, submercado in cache.submercados
         horas_no_mes = horas_mes(mes)
-        # G_{s,t}: produção agregada de todas as usinas do submercado
-        producao = sum(
-            get(cache.producao_usina, (mes, u), 0.0) 
-            for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
-            init=0.0
-        )
-        # Q^{0,B}_{s,t}: compras já existentes
+        
+        # Contratos legados e agregados (calculados FORA do loop de cenários, pois são decisões Here-and-Now / fixas)
         compra_existente = get(cache.volume_compra_existente, (mes,submercado), 0.0)
-        # Q^{0,S}_{s,t}: vendas já existentes
         venda_existente = get(cache.volume_venda_existente, (mes,submercado), 0.0)
-        
-        # Índices dos trades disponíveis para este (mês, submercado)
-        # Pré-computado no cache para evitar filtrar a cada iteração
         indices_trades_mes_submercado = cache.indices_trades_por_mes_submercado[(mes,submercado)]
+        volume_compra_agregado = isempty(indices_trades_mes_submercado) ? AffExpr(0.0) : sum(volume_compra_trade[t] for t in indices_trades_mes_submercado)
+        volume_venda_agregado = isempty(indices_trades_mes_submercado) ? AffExpr(0.0) : sum(volume_venda_trade[t] for t in indices_trades_mes_submercado)
         
-        # Seção 4.5: Agregação dos volumes dos novos trades por (mês, submercado)
-        # Q^{B}_{s,t} = Σ q^B_a  (para todos os trades a do mês t e submercado s)
-        # AffExpr(0.0): Expressão afim vazia (caso não haja trades neste mês/submercado)
-        volume_compra_agregado = isempty(indices_trades_mes_submercado) ? AffExpr(0.0) : sum(volume_compra_trade[trade] for trade in indices_trades_mes_submercado)
-        volume_venda_agregado = isempty(indices_trades_mes_submercado) ? AffExpr(0.0) : sum(volume_venda_trade[trade] for trade in indices_trades_mes_submercado)
-        
-        # E^{ω}_{s,t}: Exposição ao PLD (Seção 4.6)
-        # E = G + Q^{0,B} + Q^{B} - Q^{0,S} - Q^{S}
-        exposicao_pld = producao + compra_existente + volume_compra_agregado - venda_existente - volume_venda_agregado
-        
-        # Adiciona lucro da exposição ao PLD para cada cenário
+        # LOOP DE CENÁRIOS
         for cenario in cache.cenarios_preco
+            # 1. Geração puxando o cenário
+            producao_cenario = sum(
+                get(cache.producao_usina, (mes, u, cenario), 0.0) 
+                for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
+                init=0.0
+            )
+            
+            # 2. Exposição calculada por cenário
+            exposicao_pld_cenario = producao_cenario + compra_existente + volume_compra_agregado - venda_existente - volume_venda_agregado
+            
+            # 3. Preço do cenário
             pld = get(cache.pld_cenario, (mes, submercado, cenario), 0.0)
-            add_to_expression!(lucro_cenario[cenario], exposicao_pld * horas_no_mes * pld)
+            
+            # 4. Adiciona à expressão
+            add_to_expression!(lucro_cenario[cenario], exposicao_pld_cenario * horas_no_mes * pld)
             
             # Progress tracking
             iteracao_atual += 1
@@ -357,7 +353,7 @@ function calculate_benchmark(cache::OptimizationCache, config::FrontierConfig)::
             
             # Parte 2: Exposição ao PLD (sem novos trades)
             producao = sum(
-                get(cache.producao_usina, (mes, u), 0.0) 
+                get(cache.producao_usina, (mes, u, cenario), 0.0) 
                 for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
                 init=0.0
             )
@@ -476,12 +472,15 @@ function export_hedge_strategy(λ_escolhido::Float64, config::FrontierConfig, da
     # Calcula exposição final por (mês, submercado)
     exposicao = []
     for mes in cache.meses_futuros, submercado in cache.submercados
-        # Produção
-        producao = sum(
-            get(cache.producao_usina, (mes, u), 0.0) 
-            for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
-            init=0.0
-        )
+        # Produção média entre todos os cenários
+        producao = mean([
+            sum(
+                get(cache.producao_usina, (mes, u, cenario), 0.0) 
+                for u in cache.usinas if get(cache.submercado_usina, u, "") == submercado;
+                init=0.0
+            )
+            for cenario in cache.cenarios_preco
+        ])
         
         # Contratos existentes
         compra_existente = get(cache.volume_compra_existente, (mes,submercado), 0.0)
