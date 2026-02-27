@@ -97,7 +97,9 @@ Ajustes finos da função objetivo.
 - [X] Ampliar para várias usinas
 - [X] Ampliar para vários submercados
 - [N/A] Trade entre submercados
-- [ ] ⏱️ Métricas de tempo ← **PRÓXIMO**
-- [ ] 📊 Gerar gráficos/visualizações
-- [ ] 📚 Comparar com literatura
-- [ ] 🎯 SDDP (opcional)
+- [X] ⏱️ Métricas de tempo ← **PRÓXIMO**
+- [X] 📊 Gerar gráficos/visualizações
+- [X] 📚 Comparar com literatura
+- [X] 🎯 SDDP
+- [] Adicionar saldo no SDDP e no JuMP
+- [] Revisar a modelagem matemática (.tex), separando SDDP de JuMP
