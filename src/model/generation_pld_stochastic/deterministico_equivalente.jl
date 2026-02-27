@@ -284,7 +284,7 @@ function solve_cvar_model(λ::Float64, config::FrontierConfig, data::MarketData,
     tempo_otimizacao = time() - tempo_inicio
     print("\r   ")
     
-    status = termination_status(model)
+    status = JuMP.termination_status(model)
     if status == MOI.OPTIMAL
         retorno_milhoes = value(RetornoEsperado) / 1e6
         cvar_lucro_milhoes = value(CVaR_lucro) / 1e6
