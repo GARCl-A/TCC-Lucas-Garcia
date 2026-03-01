@@ -1,0 +1,250 @@
+using CSV, DataFrames, Dates, SDDP, HiGHS, Statistics, Printf, Random
+
+println("Rodando com ", Threads.nthreads(), " threads ativas!")
+
+struct SDDPConfig
+    data_dir::String
+    num_meses::Int
+    num_cenarios::Int
+    seed::Int
+    alpha::Float64
+    lambda::Float64
+    iteration_limit::Int
+    num_simulations::Int
+end
+
+struct MarketData
+    cenarios::DataFrame
+    geracao::DataFrame
+    contratos_existentes::DataFrame
+    trades::DataFrame
+end
+
+function load_sddp_config()
+    return SDDPConfig(
+        joinpath(@__DIR__, "../..", "data", "processed"),
+        60,      # Primeiros 12 meses
+        1000,      # 10 cenários aleatórios
+        42,      # Seed para reprodutibilidade
+        0.95,    # Alpha do CVaR
+        0.01,    # Lambda (peso do risco)
+        20,      # Iterações do SDDP
+        100      # Simulações
+    )
+end
+
+function load_market_data(config::SDDPConfig)::MarketData
+    println("🔥 Carregando dados do mercado...")
+    
+    cenarios = CSV.read(joinpath(config.data_dir, "cenarios_final.csv"), DataFrame)
+    geracao = CSV.read(joinpath(config.data_dir, "geracao_estocastica.csv"), DataFrame)
+    contratos_existentes = CSV.read(joinpath(config.data_dir, "contratos_legacy.csv"), DataFrame)
+    trades = CSV.read(joinpath(config.data_dir, "trades.csv"), DataFrame)
+    
+    cenarios.data = Date.(cenarios.data)
+    geracao.data = Date.(geracao.data)
+    contratos_existentes.data = Date.(contratos_existentes.data)
+    trades.data = Date.(trades.data)
+    
+    return MarketData(cenarios, geracao, contratos_existentes, trades)
+end
+
+horas_mes(d::Date) = daysinmonth(d) * 24
+
+function build_sddp_model(config::SDDPConfig, data::MarketData)
+    println("⚙️ Construindo modelo SDDP...")
+    
+    # Extrai conjuntos - PARAMETRIZADO
+    todos_meses = sort(unique(data.cenarios.data))
+    meses = todos_meses[1:min(config.num_meses, length(todos_meses))]
+    submercados = unique(data.geracao.submercado)
+    usinas = unique(data.geracao.usina_cod)
+    num_cenarios_total = maximum(data.cenarios.cenario)
+    
+    # Seleciona cenários aleatórios com seed
+    Random.seed!(config.seed)
+    cenarios_selecionados = sort(randperm(num_cenarios_total)[1:min(config.num_cenarios, num_cenarios_total)])
+    
+    println("   📅 Meses: $(length(meses)) | 🏭 Usinas: $(length(usinas))")
+    println("   🎲 Cenários: $(length(cenarios_selecionados)) de $num_cenarios_total (seed=$(config.seed))")
+    
+    submercado_usina = Dict(r.usina_cod => r.submercado for r in eachrow(data.geracao))
+    
+    println("   Criando dicionários de acesso rápido...")
+    dict_pld = Dict((r.data, r.submercado, r.cenario) => r.valor for r in eachrow(data.cenarios))
+    dict_geracao = Dict((r.data, r.usina_cod, r.cenario) => r.geracao_mwm for r in eachrow(data.geracao))
+
+    println("   🔄 Pré-processando dados por mês...")
+    dados_por_mes = Dict()
+    for (t, mes) in enumerate(meses)
+        print("\r   Mês $t/$(length(meses)): $mes")
+        flush(stdout)
+        
+        contratos_mes = filter(row -> row.data == mes, data.contratos_existentes)
+        vol_compra_exist = Dict()
+        vol_venda_exist = Dict()
+        preco_compra_exist = Dict()
+        preco_venda_exist = Dict()
+        
+        for sub in submercados
+            compras = filter(row -> row.submercado == sub && row.tipo == "COMPRA", contratos_mes)
+            vendas = filter(row -> row.submercado == sub && row.tipo == "VENDA", contratos_mes)
+            
+            vol_compra_exist[sub] = nrow(compras) > 0 ? sum(compras.volume_mwm) : 0.0
+            vol_venda_exist[sub] = nrow(vendas) > 0 ? sum(vendas.volume_mwm) : 0.0
+            preco_compra_exist[sub] = nrow(compras) > 0 ? sum(compras.volume_mwm .* compras.preco_r_mwh) / sum(compras.volume_mwm) : 0.0
+            preco_venda_exist[sub] = nrow(vendas) > 0 ? sum(vendas.volume_mwm .* vendas.preco_r_mwh) / sum(vendas.volume_mwm) : 0.0
+        end
+        
+        trades_mes = filter(row -> row.data == mes, data.trades)
+        
+        # Ruídos com cenários selecionados
+        ruidos = []
+        prob = 1.0 / length(cenarios_selecionados)
+        for cenario in cenarios_selecionados
+            pld = Dict(sub => get(dict_pld, (mes, sub, cenario), 0.0) for sub in submercados)
+            geracao = Dict(sub => sum(get(dict_geracao, (mes, u, cenario), 0.0) for u in usinas if get(submercado_usina, u, "") == sub; init=0.0) for sub in submercados)
+            push!(ruidos, (pld=pld, geracao=geracao, probabilidade=prob))
+        end
+        
+        dados_por_mes[t] = (
+            mes=mes,
+            submercados=submercados,
+            vol_compra_exist=vol_compra_exist,
+            vol_venda_exist=vol_venda_exist,
+            preco_compra_exist=preco_compra_exist,
+            preco_venda_exist=preco_venda_exist,
+            trades=trades_mes,
+            ruidos=ruidos,
+            horas=horas_mes(mes)
+        )
+    end
+    println("\n   ✓ Pré-processamento concluído")
+    
+    println("   🔨 Construindo grafo (pode demorar)...")
+    flush(stdout)
+    
+    ESCALA = 1e6
+    
+    # Upper bound: 1 trilhão de reais (em escala de milhões = 1e6)
+    model = SDDP.LinearPolicyGraph(
+        stages=length(meses),
+        sense=:Max,
+        upper_bound=1e6,
+        optimizer=HiGHS.Optimizer
+    ) do sp, t
+        print("\r   Estágio $t/$(length(meses))")
+        flush(stdout)
+        
+        dados = dados_por_mes[t]
+        
+        @variable(sp, dummy, SDDP.State, initial_value=0.0)
+        
+        num_trades = nrow(dados.trades)
+        if num_trades > 0
+            @variable(sp, 0 <= volume_compra[i=1:num_trades] <= dados.trades.limite_compra[i])
+            @variable(sp, 0 <= volume_venda[i=1:num_trades] <= dados.trades.limite_venda[i])
+        else
+            @variable(sp, volume_compra[1:0])
+            @variable(sp, volume_venda[1:0])
+        end
+        
+        lucro_fixo = 0.0
+        for sub in dados.submercados
+            receita_venda_exist = dados.preco_venda_exist[sub] * dados.vol_venda_exist[sub] * dados.horas
+            custo_compra_exist = dados.preco_compra_exist[sub] * dados.vol_compra_exist[sub] * dados.horas
+            lucro_fixo += (receita_venda_exist - custo_compra_exist) / ESCALA
+        end
+        
+        lucro_trades = @expression(sp, lucro_fixo)
+        for sub in dados.submercados
+            trades_sub = findall(row -> row.submercado == sub, eachrow(dados.trades))
+            if !isempty(trades_sub)
+                for i in trades_sub
+                    lucro_trades += (volume_venda[i] * dados.trades.preco_venda[i] - volume_compra[i] * dados.trades.preco_compra[i]) * dados.horas / ESCALA
+                end
+            end
+        end
+        
+        SDDP.parameterize(sp, dados.ruidos) do ω
+            lucro_pld = lucro_trades
+            
+            for sub in dados.submercados
+                trades_sub = findall(row -> row.submercado == sub, eachrow(dados.trades))
+                geracao_sub = ω.geracao[sub]
+                compra_total = dados.vol_compra_exist[sub] + (isempty(trades_sub) ? 0.0 : sum(volume_compra[i] for i in trades_sub))
+                venda_total = dados.vol_venda_exist[sub] + (isempty(trades_sub) ? 0.0 : sum(volume_venda[i] for i in trades_sub))
+                exposicao = geracao_sub + compra_total - venda_total
+                lucro_pld += exposicao * ω.pld[sub] * dados.horas / ESCALA
+            end
+            
+            @constraint(sp, dummy.out == dummy.in)
+            @stageobjective(sp, lucro_pld)
+        end
+    end
+    
+    println("\n   ✓ Grafo construído")
+    risk_measure = (1 - config.lambda) * SDDP.Expectation() + config.lambda * SDDP.AVaR(config.alpha)
+    
+    println("✅ Modelo SDDP construído")
+    return model, meses, dados_por_mes, risk_measure
+end
+
+function train_sddp_model(model, risk_measure, config::SDDPConfig)
+    println("\n🚀 Treinando modelo SDDP ($(config.iteration_limit) iterações)...\n")
+    
+    SDDP.train(model, 
+        iteration_limit=config.iteration_limit,
+        risk_measure=risk_measure,
+        print_level=1,
+        log_frequency=1,
+    )
+    
+    println("\n✅ Treinamento concluído")
+end
+
+function simulate_policy(model, config::SDDPConfig, meses, dados_por_mes)
+    println("\n📊 Simulando política ótima ($(config.num_simulations) trajetórias)...")
+    
+    simulations = SDDP.simulate(model, config.num_simulations, [:dummy])
+    
+    lucros_totais = [sum(stage[:stage_objective] for stage in sim) * 1e6 for sim in simulations]
+    retorno_esperado = mean(lucros_totais) / 1e6
+    desvio_padrao = std(lucros_totais) / 1e6
+    
+    lucros_ordenados = sort(lucros_totais)
+    idx_var = Int(ceil((1 - config.alpha) * length(lucros_ordenados)))
+    var_value = lucros_ordenados[idx_var]
+    cvar_lucro = mean(lucros_ordenados[1:idx_var]) / 1e6
+    
+    println("\n📈 RESULTADOS DA SIMULAÇÃO:")
+    println("   Retorno Esperado:  R\$ $(round(retorno_esperado, digits=1)) Mi")
+    println("   CVaR (5% piores):  R\$ $(round(cvar_lucro, digits=1)) Mi")
+    println("   Desvio Padrão:     R\$ $(round(desvio_padrao, digits=1)) Mi")
+    println("   VaR:               R\$ $(round(var_value/1e6, digits=1)) Mi")
+    
+    return simulations, retorno_esperado, cvar_lucro, desvio_padrao
+end
+
+function main()
+    println("\n" * "="^60)
+    println("🎯 OTIMIZAÇÃO MULTI-ESTÁGIO COM SDDP.jl")
+    println("="^60)
+    
+    tempo_inicio = time()
+    
+    config = load_sddp_config()
+    data = load_market_data(config)
+    
+    model, meses, dados_por_mes, risk_measure = build_sddp_model(config, data)
+    train_sddp_model(model, risk_measure, config)
+    simulations, retorno, cvar, std_dev = simulate_policy(model, config, meses, dados_por_mes)
+    
+    tempo_total = time() - tempo_inicio
+    println("\n" * "="^60)
+    println("✅ Otimização SDDP concluída!")
+    println("⏱️  Tempo total: $(round(tempo_total, digits=1)) segundos")
+    println("="^60)
+end
+
+main()
