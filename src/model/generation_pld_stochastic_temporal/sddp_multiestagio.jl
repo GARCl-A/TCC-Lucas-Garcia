@@ -22,13 +22,13 @@ end
 
 function load_sddp_config()
     return SDDPConfig(
-        joinpath(@__DIR__, "../..", "data", "processed"),
+        joinpath(@__DIR__, "..", "..", "..", "data", "processed"),
         60,      # Primeiros 12 meses
-        1000,      # 10 cenários aleatórios
+        2000,      # 10 cenários aleatórios
         42,      # Seed para reprodutibilidade
         0.95,    # Alpha do CVaR
         0.01,    # Lambda (peso do risco)
-        20,      # Iterações do SDDP
+        3,      # Iterações do SDDP
         100      # Simulações
     )
 end
@@ -57,7 +57,7 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
     # Extrai conjuntos - PARAMETRIZADO
     todos_meses = sort(unique(data.cenarios.data))
     meses = todos_meses[1:min(config.num_meses, length(todos_meses))]
-    submercados = unique(data.geracao.submercado)
+    submercados = unique(data.cenarios.submercado)
     usinas = unique(data.geracao.usina_cod)
     num_cenarios_total = maximum(data.cenarios.cenario)
     
@@ -125,6 +125,7 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
     flush(stdout)
     
     ESCALA = 1e6
+    limite_credito_escala = -100.0  # -100 milhões de reais
     
     # Upper bound: 1 trilhão de reais (em escala de milhões = 1e6)
     model = SDDP.LinearPolicyGraph(
@@ -138,8 +139,10 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
         
         dados = dados_por_mes[t]
         
-        @variable(sp, dummy, SDDP.State, initial_value=0.0)
+        # 1. Variável de estado caixa
+        @variable(sp, caixa, SDDP.State, initial_value=0.0)
         
+        # 2. Variáveis de decisão (trades)
         num_trades = nrow(dados.trades)
         if num_trades > 0
             @variable(sp, 0 <= volume_compra[i=1:num_trades] <= dados.trades.limite_compra[i])
@@ -149,6 +152,7 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
             @variable(sp, volume_venda[1:0])
         end
         
+        # 3. Lucro determinístico (contratos legados + novos trades)
         lucro_fixo = 0.0
         for sub in dados.submercados
             receita_venda_exist = dados.preco_venda_exist[sub] * dados.vol_venda_exist[sub] * dados.horas
@@ -166,20 +170,43 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
             end
         end
         
+        # 4. Variáveis auxiliares para lucro spot (estocástico)
+        @variable(sp, spot_profit[dados.submercados])
+        
+        # 5. Restrição de transição de estado (estrutural)
+        @constraint(sp, transicao_caixa, 
+            caixa.out == caixa.in + lucro_trades + sum(spot_profit[sub] for sub in dados.submercados)
+        )
+        
+        # 6. Restrição de limite de crédito (ruína)
+        @constraint(sp, limite_ruina, caixa.out >= limite_credito_escala)
+        
+        # 7. Restrições "molde" para spot_profit (serão modificadas no parameterize)
+        @constraint(sp, spot_profit_eq[sub in dados.submercados], spot_profit[sub] == 0.0)
+        
+        # 8. Parameterização estocástica (modifica coeficientes)
         SDDP.parameterize(sp, dados.ruidos) do ω
-            lucro_pld = lucro_trades
-            
             for sub in dados.submercados
+                pld_horas = (ω.pld[sub] * dados.horas) / ESCALA
+                
+                # RHS: exposição base (geração + contratos legados) * PLD
+                exposicao_base = ω.geracao[sub] + dados.vol_compra_exist[sub] - dados.vol_venda_exist[sub]
+                rhs_val = exposicao_base * pld_horas
+                JuMP.set_normalized_rhs(spot_profit_eq[sub], rhs_val)
+                
+                # Coeficientes: novos trades afetam exposição ao spot
                 trades_sub = findall(row -> row.submercado == sub, eachrow(dados.trades))
-                geracao_sub = ω.geracao[sub]
-                compra_total = dados.vol_compra_exist[sub] + (isempty(trades_sub) ? 0.0 : sum(volume_compra[i] for i in trades_sub))
-                venda_total = dados.vol_venda_exist[sub] + (isempty(trades_sub) ? 0.0 : sum(volume_venda[i] for i in trades_sub))
-                exposicao = geracao_sub + compra_total - venda_total
-                lucro_pld += exposicao * ω.pld[sub] * dados.horas / ESCALA
+                if !isempty(trades_sub)
+                    for i in trades_sub
+                        # Compra reduz exposição (coef positivo), venda aumenta (coef negativo)
+                        JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_compra[i], -pld_horas)
+                        JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_venda[i], pld_horas)
+                    end
+                end
             end
             
-            @constraint(sp, dummy.out == dummy.in)
-            @stageobjective(sp, lucro_pld)
+            # Objetivo: lucro total (trades + spot)
+            @stageobjective(sp, lucro_trades + sum(spot_profit[sub] for sub in dados.submercados))
         end
     end
     
@@ -206,7 +233,7 @@ end
 function simulate_policy(model, config::SDDPConfig, meses, dados_por_mes)
     println("\n📊 Simulando política ótima ($(config.num_simulations) trajetórias)...")
     
-    simulations = SDDP.simulate(model, config.num_simulations, [:dummy])
+    simulations = SDDP.simulate(model, config.num_simulations, [:caixa])
     
     lucros_totais = [sum(stage[:stage_objective] for stage in sim) * 1e6 for sim in simulations]
     retorno_esperado = mean(lucros_totais) / 1e6
@@ -217,11 +244,17 @@ function simulate_policy(model, config::SDDPConfig, meses, dados_por_mes)
     var_value = lucros_ordenados[idx_var]
     cvar_lucro = mean(lucros_ordenados[1:idx_var]) / 1e6
     
+    # Agora podemos rastrear caixa!
+    caixa_final_medio = mean([sim[end][:caixa].out for sim in simulations]) * 1e6
+    caixa_minimo = minimum([minimum([stage[:caixa].out for stage in sim]) for sim in simulations]) * 1e6
+    
     println("\n📈 RESULTADOS DA SIMULAÇÃO:")
     println("   Retorno Esperado:  R\$ $(round(retorno_esperado, digits=1)) Mi")
     println("   CVaR (5% piores):  R\$ $(round(cvar_lucro, digits=1)) Mi")
     println("   Desvio Padrão:     R\$ $(round(desvio_padrao, digits=1)) Mi")
-    println("   VaR:               R\$ $(round(var_value/1e6, digits=1)) Mi")
+    println("   VaR (95%):         R\$ $(round(var_value/1e6, digits=1)) Mi")
+    println("   Caixa Final Médio: R\$ $(round(caixa_final_medio / 1e6, digits=1)) Mi")
+    println("   Caixa Mínimo:      R\$ $(round(caixa_minimo / 1e6, digits=1)) Mi")
     
     return simulations, retorno_esperado, cvar_lucro, desvio_padrao
 end

@@ -57,7 +57,7 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
     # Extrai conjuntos - PARAMETRIZADO
     todos_meses = sort(unique(data.cenarios.data))
     meses = todos_meses[1:min(config.num_meses, length(todos_meses))]
-    submercados = unique(data.geracao.submercado)
+    submercados = unique(data.cenarios.submercado)
     usinas = unique(data.geracao.usina_cod)
     num_cenarios_total = maximum(data.cenarios.cenario)
     

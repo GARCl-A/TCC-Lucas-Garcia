@@ -3,13 +3,15 @@ import os
 import glob
 import importlib.util
 
-spec = importlib.util.spec_from_file_location("config", os.path.join(os.path.dirname(__file__), "..", "config.py"))
+spec = importlib.util.spec_from_file_location(
+    "config", os.path.join(os.path.dirname(__file__), "..", "config.py")
+)
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
 RAW_DIR = config.RAW_CCEE_CONTRATOS_DIR
 PROCESSED_DIR = config.PROCESSED_DIR
-GERACAO_FILE = os.path.join(PROCESSED_DIR, "geracao.csv")
+GERACAO_FILE = os.path.normpath(os.path.join(PROCESSED_DIR, "geracao_estocastica.csv"))
 
 # PARAMETROS DA CARTEIRA INICIAL
 PERCENTUAL_CONTRATADO = config.PERCENTUAL_CONTRATO_LEGADO
@@ -23,16 +25,20 @@ def processar_contratos_legados():
 
     # 1. Ler arquivo de geração para calcular produção média por submercado
     if not os.path.exists(GERACAO_FILE):
-        print(f"❌ Arquivo {GERACAO_FILE} não encontrado. Execute generation.py primeiro.")
+        print(
+            f"❌ Arquivo {GERACAO_FILE} não encontrado. Execute geracao_estocastica.py primeiro."
+        )
         return
-    
+
     df_geracao = pd.read_csv(GERACAO_FILE)
-    producao_por_submercado = df_geracao.groupby('submercado')['geracao_mwm'].mean().to_dict()
-    
+    producao_por_submercado = (
+        df_geracao.groupby("submercado")["geracao_mwm"].mean().to_dict()
+    )
+
     print("\n📊 Produção Média por Submercado:")
     for sub, prod in producao_por_submercado.items():
         print(f"   {sub}: {prod:.2f} MWm")
-    
+
     # 2. Calcular preço médio dos contratos
     arquivos = glob.glob(os.path.join(RAW_DIR, "*.csv"))
 
@@ -78,7 +84,9 @@ def processar_contratos_legados():
         )
 
     # 3. Gerar contratos proporcionais à produção de cada submercado
-    print(f"\n⏳ Gerando contratos de VENDA ({PERCENTUAL_CONTRATADO*100:.0f}% da produção) a R$ {preco_medio}...")
+    print(
+        f"\n⏳ Gerando contratos de VENDA ({PERCENTUAL_CONTRATADO*100:.0f}% da produção) a R$ {preco_medio}..."
+    )
 
     carteira = []
     datas = pd.date_range(
@@ -87,7 +95,7 @@ def processar_contratos_legados():
 
     for submercado, producao_media in producao_por_submercado.items():
         volume_contratado = round(producao_media * PERCENTUAL_CONTRATADO, 2)
-        
+
         for d in datas:
             carteira.append(
                 {
@@ -100,13 +108,13 @@ def processar_contratos_legados():
             )
 
     # 4. Salvar
-    df_final = pd.DataFrame(carteira).sort_values(['data', 'submercado'])
+    df_final = pd.DataFrame(carteira).sort_values(["data", "submercado"])
     path_saida = os.path.join(PROCESSED_DIR, "contratos_legacy.csv")
     df_final.to_csv(path_saida, index=False)
 
     print(f"\n✅ Arquivo gerado: {path_saida}")
     print("\n📋 Resumo por Submercado:")
-    print(df_final.groupby('submercado')['volume_mwm'].agg(['count', 'mean']).round(2))
+    print(df_final.groupby("submercado")["volume_mwm"].agg(["count", "mean"]).round(2))
     print(f"\nTotal de contratos: {len(df_final)}")
 
 

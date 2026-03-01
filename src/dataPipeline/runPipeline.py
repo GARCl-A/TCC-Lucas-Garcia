@@ -1,4 +1,3 @@
-# run_pipeline.py
 from dataCleanScripts import readCmarg, readPatamar
 from dataProcessScripts import processPatamar
 from utils import timeFix
@@ -6,12 +5,12 @@ from generators import generation_stochastic, contracts, trades
 
 
 def main():
-    print("Iniciando Pipeline de Dados do TCC...")
+    print("Iniciando Pipeline")
 
     # Fase 1: Preços
     readCmarg.main()
     readPatamar.converter_patamar()
-    processPatamar.processar_merge_final()  # Aqui ele vai aplicar o limite da ANEEL!
+    processPatamar.processar_merge_final()
     timeFix.aplicar_timeshift()
 
     # Fase 2: Física
@@ -21,7 +20,7 @@ def main():
     contracts.processar_contratos_legados()
     trades.gerar_trades()
 
-    print("Pipeline concluído! Vá para o Julia.")
+    print("Pipeline concluído!")
 
 
 if __name__ == "__main__":
