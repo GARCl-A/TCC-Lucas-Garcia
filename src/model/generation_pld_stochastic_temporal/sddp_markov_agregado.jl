@@ -54,30 +54,32 @@ function build_estados(
     cenarios_selecionados::Vector{Int},
     idx_pld::Dict
 )
-    # Coleta todos os PLDs para calcular quantis globais
-    todos_plds = Float64[]
-    for c in cenarios_selecionados, (t, mes) in enumerate(meses)
-        pld_medio = mean(get(idx_pld, (mes, c, sub), 0.0) for sub in submercados)
-        push!(todos_plds, pld_medio)
+    # Quantis POR MÊS: garante ~33% dos cenários em cada estado em todo mês
+    # Evita fallbacks causados por sazonalidade do PLD
+    q33_por_mes = Vector{Float64}(undef, length(meses))
+    q66_por_mes = Vector{Float64}(undef, length(meses))
+
+    for (t, mes) in enumerate(meses)
+        plds_mes = [mean(get(idx_pld, (mes, c, sub), 0.0) for sub in submercados)
+                    for c in cenarios_selecionados]
+        q33_por_mes[t] = quantile(plds_mes, 1/3)
+        q66_por_mes[t] = quantile(plds_mes, 2/3)
     end
 
-    q33 = quantile(todos_plds, 1/3)
-    q66 = quantile(todos_plds, 2/3)
-
-    println("   📊 Quantis PLD — q33: $(round(q33, digits=1)) | q66: $(round(q66, digits=1))")
+    println("   📊 Quantis PLD por mês — q33 médio: $(round(mean(q33_por_mes), digits=1)) | q66 médio: $(round(mean(q66_por_mes), digits=1))")
 
     estados_por_cenario = Dict{Int, Vector{Int}}()
     for c in cenarios_selecionados
         estados_por_cenario[c] = [
             estado_pld(
                 mean(get(idx_pld, (mes, c, sub), 0.0) for sub in submercados),
-                q33, q66
+                q33_por_mes[t], q66_por_mes[t]
             )
-            for (_, mes) in enumerate(meses)
+            for (t, mes) in enumerate(meses)
         ]
     end
 
-    return estados_por_cenario, q33, q66
+    return estados_por_cenario, q33_por_mes, q66_por_mes
 end
 
 # -----------------------------------------------------------------------------
@@ -153,19 +155,9 @@ function build_ruidos_por_estado(
             push!(ruidos[t][estado], ω)
         end
 
-        # Fallback: garante que nenhum estado fique vazio
+        # Com quantis por mês, todo estado tem pelo menos 1 cenário por construção
         for estado in 1:N_ESTADOS
-            if isempty(ruidos[t][estado])
-                # Usa o estado mais próximo que tenha dados
-                candidatos = sort(1:N_ESTADOS, by = e -> abs(e - estado))
-                for e_alt in candidatos
-                    if !isempty(ruidos[t][e_alt])
-                        append!(ruidos[t][estado], ruidos[t][e_alt])
-                        @warn "Mês $t estado $estado sem cenários — usando fallback do estado $e_alt"
-                        break
-                    end
-                end
-            end
+            @assert !isempty(ruidos[t][estado]) "Bug: estado $estado vazio no mês $t após quantis por mês"
         end
     end
 
@@ -190,7 +182,7 @@ function preprocess_data(config::SDDPConfig, data::MarketData)
     println("   🔄 Construindo estados Markovianos agregados...")
 
     # 1. Discretiza trajetórias em sequências de estados
-    estados_por_cenario, q33, q66 = build_estados(meses, submercados, cenarios_selecionados, idx_pld)
+    estados_por_cenario, q33_por_mes, q66_por_mes = build_estados(meses, submercados, cenarios_selecionados, idx_pld)
 
     # 2. Estima matriz de transição P[3×3]
     P = build_transition_matrix(estados_por_cenario, cenarios_selecionados, length(meses))
