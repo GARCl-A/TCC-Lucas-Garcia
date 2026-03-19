@@ -1,4 +1,4 @@
-using CSV, DataFrames, Dates, SDDP, HiGHS, Statistics, Printf, Random
+using CSV, DataFrames, Dates, SDDP, HiGHS, Statistics, Printf, Random, LinearAlgebra
 
 println("Rodando com ", Threads.nthreads(), " threads ativas!")
 
@@ -23,8 +23,8 @@ end
 function load_sddp_config()
     return SDDPConfig(
         joinpath(@__DIR__, "..", "..", "..", "data", "processed"),
-        60,      # Primeiros 12 meses
-        2000,      # 10 cenários aleatórios
+        60,      # Primeiros 60 meses
+        2000,       # Cenários (limitado para grafo markoviano)
         42,      # Seed para reprodutibilidade
         0.95,    # Alpha do CVaR
         0.01,    # Lambda (peso do risco)
@@ -98,15 +98,6 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
         
         trades_mes = filter(row -> row.data == mes, data.trades)
         
-        # Ruídos com cenários selecionados
-        ruidos = []
-        prob = 1.0 / length(cenarios_selecionados)
-        for cenario in cenarios_selecionados
-            pld = Dict(sub => get(dict_pld, (mes, sub, cenario), 0.0) for sub in submercados)
-            geracao = Dict(sub => sum(get(dict_geracao, (mes, u, cenario), 0.0) for u in usinas if get(submercado_usina, u, "") == sub; init=0.0) for sub in submercados)
-            push!(ruidos, (pld=pld, geracao=geracao, probabilidade=prob))
-        end
-        
         dados_por_mes[t] = (
             mes=mes,
             submercados=submercados,
@@ -115,11 +106,24 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
             preco_compra_exist=preco_compra_exist,
             preco_venda_exist=preco_venda_exist,
             trades=trades_mes,
-            ruidos=ruidos,
             horas=horas_mes(mes)
         )
     end
     println("\n   ✓ Pré-processamento concluído")
+    
+    println("   🔄 Construindo dicionário de trajetórias...")
+    trajetorias = Dict{Int, Dict{Int, NamedTuple}}()
+    for c in cenarios_selecionados
+        trajetorias[c] = Dict{Int, NamedTuple}()
+    end
+    for (t, mes) in enumerate(meses)
+        for cenario in cenarios_selecionados
+            pld = Dict(sub => get(dict_pld, (mes, sub, cenario), 0.0) for sub in submercados)
+            geracao = Dict(sub => sum(get(dict_geracao, (mes, u, cenario), 0.0) for u in usinas if get(submercado_usina, u, "") == sub; init=0.0) for sub in submercados)
+            trajetorias[cenario][t] = (pld=pld, geracao=geracao)
+        end
+    end
+    println("   ✓ Trajetórias construídas")
     
     println("   🔨 Construindo grafo (pode demorar)...")
     flush(stdout)
@@ -127,17 +131,25 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
     ESCALA = 1e6
     limite_credito_escala = -100.0  # -100 milhões de reais
     
-    # Upper bound: 1 trilhão de reais (em escala de milhões = 1e6)
-    model = SDDP.LinearPolicyGraph(
-        stages=length(meses),
-        sense=:Max,
-        upper_bound=1e6,
-        optimizer=HiGHS.Optimizer
-    ) do sp, t
-        print("\r   Estágio $t/$(length(meses))")
-        flush(stdout)
-        
+    ncen = length(cenarios_selecionados)
+    graph = SDDP.MarkovianGraph(
+        stages = length(meses),
+        transition_matrix = Matrix{Float64}(I, ncen, ncen),
+        root_node_transition = fill(1.0 / ncen, ncen)
+    )
+    model = SDDP.PolicyGraph(
+        graph;
+        sense = :Max,
+        upper_bound = 1e6,
+        optimizer = HiGHS.Optimizer
+    ) do sp, node
+        t, markov_state = node
+        cenario = cenarios_selecionados[markov_state]
         dados = dados_por_mes[t]
+        ω = trajetorias[cenario][t]
+        
+        print("\r   Nó ($t, $markov_state)/$(length(meses))")
+        flush(stdout)
         
         # 1. Variáveis de estado: caixa + pipeline temporal de contratos forward
         @variable(sp, caixa, SDDP.State, initial_value=0.0)
@@ -201,20 +213,6 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
             lucro_legado += (receita_venda_exist - custo_compra_exist) / ESCALA
         end
         
-        # Custo dos novos trades no mês atual. 
-        # Independentemente da duração, neste mês pagamos/recebemos apenas o fluxo relativo a 1 mês.
-        custo_novos_trades_mes_atual = @expression(sp,
-            sum(
-                (volume_venda[i] * dados.trades.preco_venda[i] - volume_compra[i] * dados.trades.preco_compra[i]) * dados.horas / ESCALA
-                for i in 1:num_trades;
-                init=0.0
-            )
-        )
-        
-        # fluxo_contratos: legado + parcela deste mês dos novos trades + parcela herdada de meses passados (custo_futuro[1].in)
-        fluxo_contratos = @expression(sp, lucro_legado + custo_novos_trades_mes_atual + custo_futuro[1].in)
-        
-        # Custo dos novos trades no mês atual (duracao >= 1, ou seja, todos)
         custo_novos_trades_mes_atual = @expression(sp,
             sum(
                 (volume_venda[i] * dados.trades.preco_venda[i] - volume_compra[i] * dados.trades.preco_compra[i]) * dados.horas / ESCALA
@@ -236,35 +234,28 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
         @variable(sp, 0 <= emprestimo_emergencia)
         @constraint(sp, limite_ruina, caixa.out + emprestimo_emergencia >= limite_credito_escala)
         
-        # 9. Restrições "molde" para spot_profit (serão modificadas no parameterize)
+        # 9. Restrições de spot_profit com coeficientes da trajetória fixa do nó
         @constraint(sp, spot_profit_eq[sub in dados.submercados], spot_profit[sub] == 0.0)
         
-        # 10. Parameterização estocástica (modifica coeficientes)
-        SDDP.parameterize(sp, dados.ruidos) do ω
-            for sub in dados.submercados
-                pld_horas = (ω.pld[sub] * dados.horas) / ESCALA
-                
-                # RHS: exposição base (geração + contratos legados) * PLD
-                exposicao_base = ω.geracao[sub] + dados.vol_compra_exist[sub] - dados.vol_venda_exist[sub]
-                rhs_val = exposicao_base * pld_horas
-                JuMP.set_normalized_rhs(spot_profit_eq[sub], rhs_val)
-                
-                # Coeficientes: novos trades do mês atual afetam exposição ao spot
-                trades_sub = findall(row -> row.submercado == sub, eachrow(dados.trades))
-                if !isempty(trades_sub)
-                    for i in trades_sub
-                        JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_compra[i], -pld_horas)
-                        JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_venda[i], pld_horas)
-                    end
+        for sub in dados.submercados
+            pld_horas = (ω.pld[sub] * dados.horas) / ESCALA
+            
+            exposicao_base = ω.geracao[sub] + dados.vol_compra_exist[sub] - dados.vol_venda_exist[sub]
+            JuMP.set_normalized_rhs(spot_profit_eq[sub], exposicao_base * pld_horas)
+            
+            trades_sub = findall(row -> row.submercado == sub, eachrow(dados.trades))
+            if !isempty(trades_sub)
+                for i in trades_sub
+                    JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_compra[i], -pld_horas)
+                    JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_venda[i], pld_horas)
                 end
-                
-                # Posição física herdada do passado que liquida hoje no spot
-                JuMP.set_normalized_coefficient(spot_profit_eq[sub], vol_futuro[sub, 1].in, -pld_horas)
             end
             
-            # Objetivo: lucro total (trades + spot) - Multa por falência
-            @stageobjective(sp, fluxo_contratos + sum(spot_profit[sub] for sub in dados.submercados) - (10000.0 * emprestimo_emergencia))
+            JuMP.set_normalized_coefficient(spot_profit_eq[sub], vol_futuro[sub, 1].in, -pld_horas)
         end
+        
+        # Objetivo: lucro total (trades + spot) - Multa por falência
+        @stageobjective(sp, fluxo_contratos + sum(spot_profit[sub] for sub in dados.submercados) - (10000.0 * emprestimo_emergencia))
     end
     
     println("\n   ✓ Grafo construído")
