@@ -58,19 +58,27 @@ function build_estados(
     # Evita fallbacks causados por sazonalidade do PLD
     q33_por_mes = Vector{Float64}(undef, length(meses))
     q66_por_mes = Vector{Float64}(undef, length(meses))
+    degenerado   = Vector{Bool}(undef, length(meses))   # true = mês sem variabilidade
 
     for (t, mes) in enumerate(meses)
         plds_mes = [mean(get(idx_pld, (mes, c, sub), 0.0) for sub in submercados)
                     for c in cenarios_selecionados]
         q33_por_mes[t] = quantile(plds_mes, 1/3)
         q66_por_mes[t] = quantile(plds_mes, 2/3)
+        degenerado[t]  = abs(q66_por_mes[t] - q33_por_mes[t]) < 1e-6
     end
 
+    n_deg = sum(degenerado)
+    if n_deg > 0
+        println("   ⚠️  $n_deg mês(es) degenerado(s) detectado(s) — PLD sem variabilidade, todos os cenários → estado 1")
+    end
     println("   📊 Quantis PLD por mês — q33 médio: $(round(mean(q33_por_mes), digits=1)) | q66 médio: $(round(mean(q66_por_mes), digits=1))")
 
     estados_por_cenario = Dict{Int, Vector{Int}}()
     for c in cenarios_selecionados
         estados_por_cenario[c] = [
+            # Mês degenerado: colapsa para estado 1 (sem incerteza naquele estágio)
+            degenerado[t] ? 1 :
             estado_pld(
                 mean(get(idx_pld, (mes, c, sub), 0.0) for sub in submercados),
                 q33_por_mes[t], q66_por_mes[t]
@@ -138,7 +146,7 @@ function build_ruidos_por_estado(
     estados_por_cenario::Dict{Int, Vector{Int}},
     idx_pld::Dict,
     idx_geracao::Dict
-)::Vector{Vector{Vector{NamedTuple}}}   # [t][estado] = vetor de ω
+)::Vector{Vector{Vector{NamedTuple}}}
 
     T = length(meses)
 
@@ -155,9 +163,15 @@ function build_ruidos_por_estado(
             push!(ruidos[t][estado], ω)
         end
 
-        # Com quantis por mês, todo estado tem pelo menos 1 cenário por construção
-        for estado in 1:N_ESTADOS
-            @assert !isempty(ruidos[t][estado]) "Bug: estado $estado vazio no mês $t após quantis por mês"
+        # Mês degenerado: só estado 1 tem cenários — correto por construção
+        # Mês normal: todos os 3 estados devem ter cenários (quantis por mês garantem isso)
+        estados_presentes = [e for e in 1:N_ESTADOS if !isempty(ruidos[t][e])]
+        @assert !isempty(estados_presentes) "Bug: nenhum estado tem cenários no mês $t"
+        if length(estados_presentes) < N_ESTADOS
+            ausentes = [e for e in 1:N_ESTADOS if isempty(ruidos[t][e])]
+            # Estados ausentes só são aceitáveis em mês degenerado (todos no estado 1)
+            @assert all(==(1), estados_presentes) || length(estados_presentes) == N_ESTADOS \
+                "Bug inesperado: estados $ausentes vazios no mês $t (não é mês degenerado)"
         end
     end
 
