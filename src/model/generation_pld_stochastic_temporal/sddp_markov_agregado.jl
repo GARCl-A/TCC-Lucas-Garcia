@@ -99,46 +99,66 @@ function build_estados(
         ]
     end
 
-    return estados_por_cenario, q33_por_mes, q66_por_mes
+    return estados_por_cenario, q33_por_mes, q66_por_mes, degenerado
 end
 
 # -----------------------------------------------------------------------------
-# Estima a matriz de transição P[N_ESTADOS × N_ESTADOS] contando transições
-# estado_t → estado_{t+1} em todas as trajetórias e normalizando por linha.
+# Estima um vetor de matrizes de transição, uma por estágio t (1..T-1).
 #
-# Fallback: linha sem observações recebe distribuição uniforme.
+# Estágios não degenerados: matriz empírica calculada das trajetórias.
+# Estágios degenerados (t ou t+1): todas as linhas = [1,0,0], tornando o
+# estado 1 absorvente naquele passo. O solver nunca visitará estados 2/3
+# nesses meses, eliminando a necessidade de clonagem de ruídos.
 # -----------------------------------------------------------------------------
-function build_transition_matrix(
+function build_transition_matrices(
     estados_por_cenario::Dict{Int, Vector{Int}},
     cenarios_selecionados::Vector{Int},
-    num_meses::Int
-)::Matrix{Float64}
-    contagens = zeros(Int, N_ESTADOS, N_ESTADOS)
+    num_meses::Int,
+    degenerado::Vector{Bool}
+)::Vector{Matrix{Float64}}
 
+    # Matriz empírica global (usada nos meses não degenerados)
+    contagens = zeros(Int, N_ESTADOS, N_ESTADOS)
     for c in cenarios_selecionados
         seq = estados_por_cenario[c]
         for t in 1:(num_meses - 1)
-            contagens[seq[t], seq[t+1]] += 1
+            # Só conta transições entre meses não degenerados para a matriz empírica
+            if !degenerado[t] && !degenerado[t+1]
+                contagens[seq[t], seq[t+1]] += 1
+            end
         end
     end
 
-    P = zeros(Float64, N_ESTADOS, N_ESTADOS)
+    P_empirica = zeros(Float64, N_ESTADOS, N_ESTADOS)
     for i in 1:N_ESTADOS
         total = sum(contagens[i, :])
         if total == 0
-            P[i, :] .= 1.0 / N_ESTADOS   # fallback uniforme
+            P_empirica[i, :] .= 1.0 / N_ESTADOS
         else
-            P[i, :] = contagens[i, :] / total
+            P_empirica[i, :] = contagens[i, :] / total
         end
     end
 
-    println("   🔀 Matriz de transição estimada:")
+    # Matriz degenerada: estado 1 absorvente (probabilidade 1.0 para estado 1)
+    P_deg = zeros(Float64, N_ESTADOS, N_ESTADOS)
+    P_deg[:, 1] .= 1.0
+
+    println("   🔀 Matriz de transição empírica (meses não degenerados):")
     for i in 1:N_ESTADOS
         label = ["baixo", "médio", "alto"][i]
-        println("      $label → $(round.(P[i,:], digits=3))")
+        println("      $label → $(round.(P_empirica[i,:], digits=3))")
     end
 
-    return P
+    # Monta vetor de T-1 matrizes, uma por transição t → t+1
+    Pt = Vector{Matrix{Float64}}(undef, num_meses - 1)
+    for t in 1:(num_meses - 1)
+        Pt[t] = (degenerado[t] || degenerado[t+1]) ? P_deg : P_empirica
+    end
+
+    n_deg_trans = sum(degenerado[t] || degenerado[t+1] for t in 1:(num_meses-1))
+    println("   📊 Transições degeneradas: $n_deg_trans/$(num_meses-1)")
+
+    return Pt
 end
 
 # -----------------------------------------------------------------------------
@@ -156,12 +176,20 @@ function build_ruidos_por_estado(
     submercados::Vector{String},
     cenarios_selecionados::Vector{Int},
     estados_por_cenario::Dict{Int, Vector{Int}},
+    degenerado::Vector{Bool},
     idx_pld::Dict,
     idx_geracao::Dict
 )::Vector{Vector{Vector{NamedTuple}}}
 
     T = length(meses)
     ruidos = [[NamedTuple[] for _ in 1:N_ESTADOS] for _ in 1:T]
+
+    # ω dummy de zeros: usado apenas para satisfazer a tipagem do SDDP.parameterize
+    # em estados que nunca serão visitados (probabilidade 0 pela matriz degenerada)
+    ω_dummy = (
+        pld     = Dict{String,Float64}(sub => 0.0 for sub in submercados),
+        geracao = Dict{String,Float64}(sub => 0.0 for sub in submercados)
+    )
 
     for (t, mes) in enumerate(meses)
         for c in cenarios_selecionados
@@ -173,20 +201,21 @@ function build_ruidos_por_estado(
             push!(ruidos[t][estado], ω)
         end
 
-        # Mês degenerado: estados 2 e 3 ficam vazios por construção (todos os cenários → estado 1)
-        # SDDP.parameterize não aceita vetor vazio — esses nós recebem o pool do estado 1
-        # Isso é correto: sem variabilidade, qualquer estado do grafo naquele mês é equivalente
-        for estado in 2:N_ESTADOS
+        # Estados vazios recebem apenas o dummy — nunca serão sorteados pois
+        # a matriz de transição degenerada tem probabilidade 0 de chegar aqui
+        for estado in 1:N_ESTADOS
             if isempty(ruidos[t][estado])
-                append!(ruidos[t][estado], ruidos[t][1])
+                push!(ruidos[t][estado], ω_dummy)
             end
         end
     end
 
-    println("   🎲 Ruídos por estado (média de cenários/mês):")
+    println("   🎲 Ruídos por estado (média de cenários/mês, excluindo dummies):")
     for estado in 1:N_ESTADOS
-        media = mean(length(ruidos[t][estado]) for t in 1:T)
-        println("      estado $estado: $(round(media, digits=1)) cenários/mês")
+        # Conta apenas meses não degenerados para a média significativa
+        contagens_reais = [length(ruidos[t][estado]) for t in 1:T if !degenerado[t]]
+        media = isempty(contagens_reais) ? 0.0 : mean(contagens_reais)
+        println("      estado $estado: $(round(media, digits=1)) cenários/mês (não degenerados)")
     end
 
     return ruidos
@@ -203,10 +232,10 @@ function preprocess_data(config::SDDPConfig, data::MarketData)
     println("   🔄 Construindo estados Markovianos agregados...")
 
     # 1. Discretiza trajetórias em sequências de estados
-    estados_por_cenario, q33_por_mes, q66_por_mes = build_estados(meses, submercados, cenarios_selecionados, idx_pld)
+    estados_por_cenario, q33_por_mes, q66_por_mes, degenerado = build_estados(meses, submercados, cenarios_selecionados, idx_pld)
 
-    # 2. Estima matriz de transição P[3×3]
-    P = build_transition_matrix(estados_por_cenario, cenarios_selecionados, length(meses))
+    # 2. Matrizes de transição dependentes do tempo (uma por estágio)
+    Pt = build_transition_matrices(estados_por_cenario, cenarios_selecionados, length(meses), degenerado)
 
     # 3. Distribuição inicial: frequência dos estados no primeiro mês
     contagem_inicial = zeros(Int, N_ESTADOS)
@@ -220,7 +249,7 @@ function preprocess_data(config::SDDPConfig, data::MarketData)
     println("   🔄 Montando ruidos_por_estado...")
     ruidos = build_ruidos_por_estado(
         meses, submercados, cenarios_selecionados,
-        estados_por_cenario, idx_pld, idx_geracao
+        estados_por_cenario, degenerado, idx_pld, idx_geracao
     )
 
     # 5. dados_por_mes — idêntico ao markoviano, mas com ruidos_por_estado
@@ -251,7 +280,7 @@ function preprocess_data(config::SDDPConfig, data::MarketData)
     end
 
     println("\n   ✓ Pré-processamento concluído")
-    return meses, submercados, dados_por_mes, P, root_probs
+    return meses, submercados, dados_por_mes, Pt, root_probs
 end
 
 # =============================================================================
@@ -264,18 +293,19 @@ end
 #   4. SDDP.parameterize sorteia ω de ruidos_por_estado[t][estado]
 #   5. Toda a lógica econômica (variáveis, restrições, objetivo) é idêntica
 # =============================================================================
-function build_sddp_model(meses, dados_por_mes, P::Matrix{Float64}, root_probs::Vector{Float64})
-    println("   🔨 Construindo grafo Markov agregado ($(N_ESTADOS) estados)...")
+function build_sddp_model(meses, dados_por_mes, Pt::Vector{Matrix{Float64}}, root_probs::Vector{Float64})
+    println("   🔨 Construindo grafo Markov agregado ($(N_ESTADOS) estados, matrizes dependentes do tempo)...")
     flush(stdout)
 
     ESCALA                = 1e6
     limite_credito_escala = -100.0
     total_nos             = length(meses) * N_ESTADOS
 
-    # DIFERENÇA 1: P[3×3] estimada das trajetórias — não é mais identidade
+    # Matrizes de transição dependentes do tempo:
+    # meses degenerados usam P_deg (estado 1 absorvente), eliminando visitas a estados 2/3
     graph = SDDP.MarkovianGraph(
         stages               = length(meses),
-        transition_matrix    = P,
+        transition_matrix    = Pt,
         root_node_transition = root_probs
     )
 
@@ -416,11 +446,11 @@ function main()
     config = load_sddp_config()
     data   = load_market_data(config)
 
-    meses, submercados, dados_por_mes, P, root_probs = preprocess_data(config, data)
+    meses, submercados, dados_por_mes, Pt, root_probs = preprocess_data(config, data)
 
     risk_measure = (1 - config.lambda) * SDDP.Expectation() + config.lambda * SDDP.AVaR(config.alpha)
 
-    model = build_sddp_model(meses, dados_por_mes, P, root_probs)
+    model = build_sddp_model(meses, dados_por_mes, Pt, root_probs)
     println("✅ Modelo SDDP construído")
 
     train_sddp_model(model, risk_measure, config)

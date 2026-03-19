@@ -1,0 +1,518 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+
+\begin{document}
+
+\title{Formulação Matemática do Modelo SDDP com Cadeia de Markov Agregada}
+\author{}
+\date{}
+\maketitle
+
+% =============================================================================
+\section{Conjuntos}
+% =============================================================================
+\begin{itemize}
+
+    \item $\mathcal{T} = \{1, \ldots, T\}$: Conjunto de estágios (meses) do horizonte de planejamento.
+    % meses = todos_meses[1:min(config.num_meses, length(todos_meses))]
+    % T = 60
+
+    \item $\mathcal{S}$: Conjunto de submercados de energia (ex: SE, S, NE, N).
+    % submercados = String.(unique(data.cenarios.submercado))
+
+    \item $\mathcal{U}$: Conjunto de usinas geradoras.
+    % usinas = unique(data.geracao.usina_cod)
+
+    \item $\mathcal{I}_{t,s}$: Conjunto de trades disponíveis no estágio $t \in \mathcal{T}$
+    e submercado $s \in \mathcal{S}$.
+    % trades_por_sub[sub] = findall(i -> trades_mes.submercado[i] == sub, 1:nrow(trades_mes))
+
+    \item $\mathcal{M} = \{1, 2, 3\}$: Conjunto de estados Markovianos agregados do PLD
+    (1 = baixo, 2 = médio, 3 = alto).
+    % const N_ESTADOS = 3
+
+    \item $\Omega_{t,m}$: Conjunto de realizações estocásticas (ruídos) associadas ao estado
+    $m \in \mathcal{M}$ no estágio $t \in \mathcal{T}$.
+    % ruidos[t][estado] = vetor de ω construído em build_ruidos_por_estado
+    % Cada ω = (pld = Dict{String,Float64}, geracao = Dict{String,Float64})
+
+    \item $\mathcal{K} = \{1, \ldots, 5\}$: Conjunto de defasagens do pipeline temporal
+    de contratos forward (em meses).
+    % vol_futuro[dados.submercados, 1:5] e custo_futuro[1:5]
+
+\end{itemize}
+
+\noindent\textbf{Regime contábil.} O balanço financeiro do modelo opera em \emph{Regime de
+Caixa} (\emph{Cash Accounting}): receitas e custos são reconhecidos no estágio em que o
+fluxo financeiro efetivamente ocorre, sem desconto a valor presente. Essa escolha é
+consistente com horizontes de planejamento de curto e médio prazo em que a taxa de desconto
+tem impacto secundário frente à incerteza de preços, e simplifica a estrutura recursiva do
+SDDP ao eliminar fatores de desconto nas equações de transição de caixa.
+
+% =============================================================================
+\section{Parâmetros}
+% =============================================================================
+\begin{itemize}
+
+    \item $E_{scale} = 10^6$: Fator de escala financeira (R\$ para R\$ milhões).
+    % ESCALA = 1e6
+
+    \item $L^{cred} = -100$: Limite de crédito (R\$ milhões). Saldo de caixa mínimo permitido.
+    % limite_credito_escala = -100.0
+
+    \item $H_t$: Número de horas no mês $t$.
+    % horas_mes(d::Date) = daysinmonth(d) * 24
+    % dados.horas = horas_mes(mes)
+
+    \item $V^{leg,B}_{t,s}$: Volume consolidado de contratos de compra legados no estágio $t$,
+    submercado $s$ (MWm).
+    % vol_compra_exist[sub]
+
+    \item $V^{leg,S}_{t,s}$: Volume consolidado de contratos de venda legados no estágio $t$,
+    submercado $s$ (MWm).
+    % vol_venda_exist[sub]
+
+    \item $P^{leg,B}_{t,s}$: Preço médio ponderado dos contratos de compra legados no estágio $t$,
+    submercado $s$ (R\$/MWh).
+    % preco_compra_exist[sub]
+
+    \item $P^{leg,S}_{t,s}$: Preço médio ponderado dos contratos de venda legados no estágio $t$,
+    submercado $s$ (R\$/MWh).
+    % preco_venda_exist[sub]
+
+    \item $\bar{V}^{B}_{i}$: Limite máximo de volume para o trade de compra $i$ (MWm).
+    % dados.trades.limite_compra[i]
+
+    \item $\bar{V}^{S}_{i}$: Limite máximo de volume para o trade de venda $i$ (MWm).
+    % dados.trades.limite_venda[i]
+
+    \item $P^{B}_{i}$: Preço unitário do trade de compra $i$ (R\$/MWh).
+    % dados.trades.preco_compra[i]
+
+    \item $P^{S}_{i}$: Preço unitário do trade de venda $i$ (R\$/MWh).
+    % dados.trades.preco_venda[i]
+
+    \item $D_{i}$: Duração em meses do trade $i$.
+    % dados.trades.duracao_meses[i]
+
+    \item $G_{t,s}(\omega)$: Geração física agregada no submercado $s$, estágio $t$,
+    realização $\omega \in \Omega_{t,m}$.
+    % ω.geracao[sub]
+
+    \item $PLD_{t,s}(\omega)$: Preço de Liquidação das Diferenças no submercado $s$,
+    estágio $t$, realização $\omega \in \Omega_{t,m}$ (R\$/MWh).
+    % ω.pld[sub]
+
+    \item $p(\omega \mid m)$: Probabilidade de ocorrência da realização $\omega$ dado o estado $m$.
+    Uniforme dentro de cada estado: $p(\omega \mid m) = 1 / |\Omega_{t,m}|$.
+    % SDDP.parameterize(sp, dados.ruidos_por_estado[estado])
+    % probabilidade implícita uniforme pelo SDDP.jl
+
+    \item $\mathbf{P} \in \mathbb{R}^{3 \times 3}$: Matriz de transição estacionária da cadeia
+    de Markov, onde $P_{ij} = \Pr(m_{t+1} = j \mid m_t = i)$. A matriz é estimada agregando
+    as transições ao longo de todo o horizonte, assumindo a estacionariedade do processo de
+    estados.
+    % build_transition_matrix → P[i,j] = contagens[i,j] / sum(contagens[i,:])
+
+    \item $\pi_0 \in \mathbb{R}^3$: Distribuição inicial dos estados Markovianos no estágio $t=1$.
+    % root_probs = contagem_inicial / sum(contagem_inicial)
+
+    \item $q^{33}_t,\, q^{66}_t$: Quantis de 33\% e 66\% do $PLD^{SE}_t$ entre todos os cenários
+    do estágio $t$, usados para discretizar o espaço de estados.
+    % q33_por_mes[t] = quantile(plds_mes, 1/3)
+    % q66_por_mes[t] = quantile(plds_mes, 2/3)
+
+\end{itemize}
+
+% =============================================================================
+\section{Discretização dos Estados Markovianos}
+% =============================================================================
+
+O estado Markoviano $m_t \in \mathcal{M}$ é determinado pelo PLD do submercado de referência
+(SE) no estágio $t$, usando quantis calculados \emph{por mês} sobre o conjunto de cenários
+históricos. A discretização por quantis induz equiprobabilidade apenas nos meses com
+variabilidade climática suficiente. Em estágios degenerados --- onde a variância dos preços
+projetados é nula --- ocorre o colapso empírico dos cenários para o estado base
+($m = 1$), e os estados $m \in \{2, 3\}$ ficam vazios ($\Omega_{t,m} = \emptyset$). Para
+manter a viabilidade computacional da matriz de transição estacionária $\mathbf{P}$ sem
+gerar nós vazios, o modelo adota um \emph{fallback} condicional, populando os estados
+inexistentes com as realizações do estado base. Embora essa aproximação garanta a correta
+precificação física e financeira do ativo nesses períodos, ela altera a interpretação
+estatística estrita da independência condicional da Cadeia de Markov, representando uma
+concessão pragmática para a tratabilidade no SDDP.
+
+\subsection{Submercado de Referência}
+
+\begin{align}
+    PLD^{ref}_{t,c} = PLD_{t,\text{SE},c}
+\end{align}
+% _pld_referencia: ref = "SE" in submercados ? "SE" : submercados[1]
+% get(idx_pld, (mes, cenario, ref), 0.0)
+
+\subsection{Função de Discretização}
+
+Dado o vetor $\{PLD^{ref}_{t,c}\}_{c \in \mathcal{C}}$ de todos os cenários no estágio $t$:
+
+\begin{align}
+    m_t(c) =
+    \begin{cases}
+        1 & \text{se } PLD^{ref}_{t,c} \leq q^{33}_t \quad \text{(baixo)} \\
+        2 & \text{se } q^{33}_t < PLD^{ref}_{t,c} \leq q^{66}_t \quad \text{(médio)} \\
+        3 & \text{se } PLD^{ref}_{t,c} > q^{66}_t \quad \text{(alto)}
+    \end{cases}
+\end{align}
+% estado_pld(pld, q33, q66):
+%   pld <= q33 → 1
+%   pld <= q66 → 2
+%   else       → 3
+
+\subsection{Tratamento de Meses Degenerados}
+
+Um estágio $t$ é dito \emph{degenerado} quando $|q^{66}_t - q^{33}_t| < \varepsilon$
+(com $\varepsilon = 10^{-6}$), indicando ausência de variabilidade intercenários do PLD.
+Nesse caso, todos os cenários são atribuídos ao estado 1:
+
+\begin{align}
+    m_t(c) = 1 \quad \forall\, c \in \mathcal{C}, \quad
+    \text{se } |q^{66}_t - q^{33}_t| < \varepsilon
+\end{align}
+% degenerado[t] = abs(q66_por_mes[t] - q33_por_mes[t]) < 1e-6
+% degenerado[t] ? 1 : estado_pld(...)
+
+\subsection{Estimação da Matriz de Transição}
+
+A matriz $\mathbf{P}$ é estimada por contagem de frequências nas trajetórias históricas:
+
+\begin{align}
+    N_{ij} = \sum_{c \in \mathcal{C}} \sum_{t=1}^{T-1}
+    \mathbf{1}\bigl[m_t(c) = i\bigr] \cdot \mathbf{1}\bigl[m_{t+1}(c) = j\bigr]
+\end{align}
+
+\begin{align}
+    P_{ij} =
+    \begin{cases}
+        \dfrac{N_{ij}}{\sum_{j'} N_{ij'}} & \text{se } \sum_{j'} N_{ij'} > 0 \\[6pt]
+        \dfrac{1}{|\mathcal{M}|}           & \text{caso contrário (fallback uniforme)}
+    \end{cases}
+\end{align}
+% build_transition_matrix:
+%   contagens[seq[t], seq[t+1]] += 1
+%   P[i,:] = contagens[i,:] / total   (ou 1/N_ESTADOS se total == 0)
+
+% =============================================================================
+\section{Variáveis de Decisão}
+% =============================================================================
+
+As variáveis são definidas para cada nó $(t, m)$ do grafo de política:
+
+\begin{itemize}
+
+    \item $x_t \in \mathbb{R}$: Variável de estado — saldo de caixa acumulado ao final do
+    estágio $t$ (R\$ milhões). $x_0 = 0$.
+    % @variable(sp, caixa, SDDP.State, initial_value=0.0)
+    % caixa.in = x_{t-1}, caixa.out = x_t
+
+    \item $f^{vol}_{t,s,k} \in \mathbb{R}$: Variável de estado — volume líquido de contratos
+    forward com $k$ meses restantes de vigência, no submercado $s$, ao final do estágio $t$
+    (MWm). $f^{vol}_{0,s,k} = 0$.
+    % @variable(sp, vol_futuro[dados.submercados, 1:5], SDDP.State, initial_value=0.0)
+    % vol_futuro[sub, k].in = f^vol_{t-1,s,k}, vol_futuro[sub, k].out = f^vol_{t,s,k}
+
+    \item $f^{cf}_{t,k} \in \mathbb{R}$: Variável de estado --- Fluxo de Caixa dos Contratos
+    (Receita Líquida Forward) com $k$ meses restantes de vigência, ao final do estágio $t$
+    (R\$ milhões). $f^{cf}_{0,k} = 0$.
+    % @variable(sp, custo_futuro[1:5], SDDP.State, initial_value=0.0)
+    % custo_futuro[k].in = f^cf_{t-1,k}, custo_futuro[k].out = f^cf_{t,k}
+
+    \item $v^{B}_{i,t} \in \mathbb{R}$: Volume negociado no trade de compra $i \in \mathcal{I}_{t,s}$
+    no estágio $t$ (MWm). Domínio: $0 \leq v^{B}_{i,t} \leq \bar{V}^{B}_{i}$.
+    % @variable(sp, 0 <= volume_compra[i=1:num_trades] <= dados.trades.limite_compra[i])
+
+    \item $v^{S}_{i,t} \in \mathbb{R}$: Volume negociado no trade de venda $i \in \mathcal{I}_{t,s}$
+    no estágio $t$ (MWm). Domínio: $0 \leq v^{S}_{i,t} \leq \bar{V}^{S}_{i}$.
+    % @variable(sp, 0 <= volume_venda[i=1:num_trades] <= dados.trades.limite_venda[i])
+
+    \noindent As restrições de não-negatividade $v^{B}_{i,t} \geq 0$ e $v^{S}_{i,t} \geq 0$
+    são impostas diretamente nos limites inferiores das variáveis JuMP e integram o bloco
+    \emph{s.t.} do subproblema.
+
+    \item $y^{spot}_{s,t} \in \mathbb{R}$: Variável auxiliar — resultado financeiro no mercado
+    spot do submercado $s$ no estágio $t$ (R\$ milhões). Coeficientes injetados via
+    \texttt{parameterize}.
+    % @variable(sp, spot_profit[dados.submercados])
+
+    \item $e_t \geq 0$: Variável de folga — empréstimo de emergência para evitar infeasibility
+    quando o caixa viola o limite de crédito (R\$ milhões). Penalizada no objetivo.
+    % @variable(sp, 0 <= emprestimo_emergencia)
+
+\end{itemize}
+
+% =============================================================================
+\section{Relações entre Variáveis (Expressões Auxiliares)}
+% =============================================================================
+
+\subsection{Adição Líquida ao Pipeline por Duração}
+
+Para cada submercado $s$ e defasagem $k \in \mathcal{K}$, o volume líquido adicionado ao
+pipeline pelos trades do estágio $t$ com duração restante superior a $k$ meses é:
+
+\begin{align}
+    \Delta f^{vol}_{t,s,k} =
+    \sum_{\substack{i \in \mathcal{I}_{t,s} \\ D_i > k}}
+    \left( v^{B}_{i,t} - v^{S}_{i,t} \right)
+\end{align}
+% vol_add_futuro[(sub, k)] = sum((volume_compra[i] - volume_venda[i])
+%     for i if trades.submercado[i]==sub && trades.duracao_meses[i] > k)
+
+A Receita Líquida Forward adicionada ao pipeline pelos trades com duração restante superior
+a $k$ meses é:
+
+\begin{align}
+    \Delta f^{cf}_{t,k} =
+    \sum_{\substack{i \in \mathcal{I}_{t} \\ D_i > k}}
+    \frac{\left( v^{S}_{i,t} P^{S}_{i} - v^{B}_{i,t} P^{B}_{i} \right) H_t}{E_{scale}}
+\end{align}
+% custo_add_futuro[k] = sum((volume_venda[i]*preco_venda[i] - volume_compra[i]*preco_compra[i])
+%     * dados.horas / ESCALA   for i if duracao_meses[i] > k)
+
+\subsection{Lucro Determinístico dos Contratos Legados}
+
+\begin{align}
+    R^{leg}_t =
+    \sum_{s \in \mathcal{S}}
+    \frac{\left( P^{leg,S}_{t,s}\, V^{leg,S}_{t,s} - P^{leg,B}_{t,s}\, V^{leg,B}_{t,s} \right) H_t}
+         {E_{scale}}
+\end{align}
+% lucro_legado += (preco_venda_exist[sub] * vol_venda_exist[sub]
+%                - preco_compra_exist[sub] * vol_compra_exist[sub]) * horas / ESCALA
+
+\subsection{Lucro Determinístico dos Novos Trades (Mês Atual)}
+
+\begin{align}
+    R^{trades}_t =
+    \sum_{i \in \mathcal{I}_{t}}
+    \frac{\left( v^{S}_{i,t} P^{S}_{i} - v^{B}_{i,t} P^{B}_{i} \right) H_t}{E_{scale}}
+\end{align}
+% custo_novos_trades_mes_atual = sum((volume_venda[i]*preco_venda[i]
+%     - volume_compra[i]*preco_compra[i]) * horas / ESCALA   for i in 1:num_trades)
+
+\subsection{Cashflow Contratual do Estágio}
+
+\begin{align}
+    F_t = R^{leg}_t + R^{trades}_t + f^{cf}_{t-1,1}
+\end{align}
+% fluxo_contratos = lucro_legado + custo_novos_trades_mes_atual + custo_futuro[1].in
+
+\subsection{Exposição Base ao PLD}
+
+Para cada submercado $s$ e realização $\omega$:
+
+\begin{align}
+    E_{t,s}(\omega) = G_{t,s}(\omega) + V^{leg,B}_{t,s} - V^{leg,S}_{t,s}
+\end{align}
+% exposicao_base = ω.geracao[sub] + vol_compra_exist[sub] - vol_venda_exist[sub]
+
+% =============================================================================
+\section{Restrições}
+% =============================================================================
+
+\subsection{Condição Inicial}
+
+\begin{align}
+    x_0 = 0, \quad f^{vol}_{0,s,k} = 0 \;\; \forall s,k, \quad f^{cf}_{0,k} = 0 \;\; \forall k
+\end{align}
+% initial_value=0.0 em todas as SDDP.State
+
+\subsection{Transição do Pipeline de Volume Forward}
+
+Para cada $s \in \mathcal{S}$, $k \in \{1,\ldots,4\}$:
+
+\begin{align}
+    f^{vol}_{t,s,k} = f^{vol}_{t-1,s,k+1} + \Delta f^{vol}_{t,s,k}
+\end{align}
+
+Para $k = 5$:
+
+\begin{align}
+    f^{vol}_{t,s,5} = \Delta f^{vol}_{t,s,5}
+\end{align}
+% @constraint(sp, vol_futuro[sub, k].out == vol_futuro[sub, k+1].in + vol_add_futuro[sub, k])
+% @constraint(sp, vol_futuro[sub, 5].out == vol_add_futuro[sub, 5])
+
+\subsection{Transição do Pipeline de Fluxo de Caixa Forward}
+
+Para $k \in \{1,\ldots,4\}$:
+
+\begin{align}
+    f^{cf}_{t,k} = f^{cf}_{t-1,k+1} + \Delta f^{cf}_{t,k}
+\end{align}
+
+Para $k = 5$:
+
+\begin{align}
+    f^{cf}_{t,5} = \Delta f^{cf}_{t,5}
+\end{align}
+% @constraint(sp, custo_futuro[k].out == custo_futuro[k+1].in + custo_add_futuro[k])
+% @constraint(sp, custo_futuro[5].out == custo_add_futuro[5])
+
+\subsection{Liquidação no Mercado Spot}
+
+Para cada $s \in \mathcal{S}$, dado $\omega \in \Omega_{t,m}$, define-se
+$\lambda_{t,s}(\omega) = PLD_{t,s}(\omega) \cdot H_t / E_{scale}$. A restrição molde,
+com coeficientes injetados pelo \texttt{parameterize}, é:
+
+\begin{align}
+    y^{spot}_{s,t}
+    - \sum_{i \in \mathcal{I}_{t,s}} v^{B}_{i,t}\, \lambda_{t,s}(\omega)
+    + \sum_{i \in \mathcal{I}_{t,s}} v^{S}_{i,t}\, \lambda_{t,s}(\omega)
+    - f^{vol}_{t-1,s,1}\, \lambda_{t,s}(\omega)
+    = E_{t,s}(\omega)\, \lambda_{t,s}(\omega)
+    \quad \forall s \in \mathcal{S}
+\end{align}
+% @constraint(sp, spot_profit_eq[sub], spot_profit[sub] == 0.0)   ← molde
+% JuMP.set_normalized_rhs(spot_profit_eq[sub], exposicao_base * pld_horas)
+% JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_compra[i], -pld_horas)
+% JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_venda[i],   pld_horas)
+% JuMP.set_normalized_coefficient(spot_profit_eq[sub], vol_futuro[sub,1].in, -pld_horas)
+
+Isolando $y^{spot}_{s,t}$:
+
+\begin{align}
+    y^{spot}_{s,t}(\omega) =
+    \left[
+        E_{t,s}(\omega)
+        - \sum_{i \in \mathcal{I}_{t,s}} v^{B}_{i,t}
+        + \sum_{i \in \mathcal{I}_{t,s}} v^{S}_{i,t}
+        - f^{vol}_{t-1,s,1}
+    \right]
+    \lambda_{t,s}(\omega)
+\end{align}
+
+\subsection{Transição de Caixa}
+
+\begin{align}
+    x_t = x_{t-1} + F_t + \sum_{s \in \mathcal{S}} y^{spot}_{s,t}
+\end{align}
+% @constraint(sp, transicao_caixa,
+%     caixa.out == caixa.in + fluxo_contratos + sum(spot_profit[sub] for sub in submercados))
+
+\subsection{Limite de Crédito (com Folga)}
+
+\begin{align}
+    x_t + e_t \geq L^{cred}
+\end{align}
+% @constraint(sp, limite_ruina, caixa.out + emprestimo_emergencia >= limite_credito_escala)
+
+% =============================================================================
+\section{Função Objetivo do Estágio}
+% =============================================================================
+
+O recurso imediato no nó $(t, m)$, dado $\omega \in \Omega_{t,m}$, é:
+
+\begin{align}
+    r_t(\omega) =
+    F_t + \sum_{s \in \mathcal{S}} y^{spot}_{s,t}(\omega) - M \cdot e_t
+\end{align}
+
+onde $M = 10000$ é o coeficiente de penalidade por violação do limite de crédito.
+% @stageobjective(sp,
+%     fluxo_contratos + sum(spot_profit[sub] for sub in submercados) - 10000.0 * emprestimo_emergencia)
+
+O SDDP maximiza a soma descontada dos recursos imediatos ao longo do horizonte, incorporando
+a função de custo futuro (aproximada por cortes de Benders) em cada nó.
+
+% =============================================================================
+\section{Modelagem da Incerteza: Cadeia de Markov Agregada}
+% =============================================================================
+
+\subsection{Estrutura do Grafo de Política}
+
+O grafo de política é um $\mathbf{MarkovianGraph}$ com $T$ estágios e $|\mathcal{M}| = 3$
+estados por estágio. Cada nó é o par $(t, m) \in \mathcal{T} \times \mathcal{M}$.
+
+A probabilidade de transição do nó $(t, m)$ para o nó $(t+1, m')$ é $P_{mm'}$.
+% SDDP.MarkovianGraph(stages=T, transition_matrix=P, root_node_transition=root_probs)
+
+\subsection{Incerteza Residual Dentro do Estado}
+
+Dado que o processo está no estado $m$ no estágio $t$, a realização $\omega$ é sorteada
+uniformemente de $\Omega_{t,m}$:
+
+\begin{align}
+    \omega \sim \text{Uniforme}(\Omega_{t,m})
+\end{align}
+% SDDP.parameterize(sp, dados.ruidos_por_estado[estado]) do ω ... end
+% probabilidade implícita uniforme dentro do estado
+
+Isso separa dois níveis de incerteza:
+\begin{enumerate}
+    \item \textbf{Nível Markoviano}: qual estado $m_{t+1}$ será atingido, governado por $\mathbf{P}$.
+    \item \textbf{Nível Residual}: qual realização $\omega$ ocorre dentro do estado $m_t$,
+    governado pela distribuição empírica de $\Omega_{t,m}$.
+\end{enumerate}
+
+% =============================================================================
+\section{Modelagem do Lucro e do Risco}
+% =============================================================================
+
+\subsection{Lucro Total do Estágio}
+
+O lucro total realizado no estágio $t$, dado $\omega$, é:
+
+\begin{align}
+    \text{Lucro}_t(\omega) =
+    R^{leg}_t + R^{trades}_t + f^{cf}_{t-1,1}
+    + \sum_{s \in \mathcal{S}} y^{spot}_{s,t}(\omega)
+\end{align}
+
+Expandindo $y^{spot}_{s,t}(\omega)$:
+
+\begin{align}
+    \text{Lucro}_t(\omega) =
+    R^{leg}_t + R^{trades}_t + f^{cf}_{t-1,1}
+    + \sum_{s \in \mathcal{S}}
+    \left[
+        E_{t,s}(\omega)
+        - \sum_{i \in \mathcal{I}_{t,s}} v^{B}_{i,t}
+        + \sum_{i \in \mathcal{I}_{t,s}} v^{S}_{i,t}
+        - f^{vol}_{t-1,s,1}
+    \right]
+    \frac{PLD_{t,s}(\omega)\, H_t}{E_{scale}}
+\end{align}
+
+\subsection{Medida de Risco}
+
+A aversão ao risco é modelada por uma combinação convexa entre Esperança e CVaR
+(Conditional Value-at-Risk), aplicada globalmente sobre a árvore de cenários:
+
+\begin{align}
+    \rho[Z] = (1 - \lambda)\, \mathbb{E}[Z] + \lambda\, \text{CVaR}_{\alpha}[Z]
+\end{align}
+
+com parâmetros:
+\begin{itemize}
+    \item $\alpha = 0.95$ (nível de confiança do CVaR — cauda dos 5\% piores resultados)
+    % 0.95  # Alpha do CVaR
+    \item $\lambda = 0.01$ (peso do componente de risco)
+    % 0.01  # Lambda (peso do risco)
+\end{itemize}
+% risk_measure = (1 - config.lambda) * SDDP.Expectation() + config.lambda * SDDP.AVaR(config.alpha)
+% SDDP.train(model, ..., risk_measure=risk_measure)
+
+\subsection{Parâmetros Estruturais do Algoritmo}
+
+\begin{itemize}
+    \item Iterações do SDDP: 10.
+    % iteration_limit = 10
+    \item Simulações Monte Carlo (avaliação da política): 2000.
+    % num_simulations = 2000
+    \item Cenários históricos usados para estimar $\mathbf{P}$ e $\Omega_{t,m}$: 2000.
+    % num_cenarios = 2000
+    \item Seed de reprodutibilidade: 42.
+    % seed = 42
+\end{itemize}
+
+\end{document}
