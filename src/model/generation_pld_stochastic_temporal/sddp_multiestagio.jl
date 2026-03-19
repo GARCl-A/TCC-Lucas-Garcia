@@ -139,8 +139,10 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
         
         dados = dados_por_mes[t]
         
-        # 1. Variável de estado caixa
+        # 1. Variáveis de estado: caixa + pipeline temporal de contratos forward
         @variable(sp, caixa, SDDP.State, initial_value=0.0)
+        @variable(sp, vol_futuro[dados.submercados, 1:5], SDDP.State, initial_value=0.0)
+        @variable(sp, custo_futuro[1:5], SDDP.State, initial_value=0.0)
         
         # 2. Variáveis de decisão (trades)
         num_trades = nrow(dados.trades)
@@ -152,37 +154,78 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
             @variable(sp, volume_venda[1:0])
         end
         
-        # 3. Lucro determinístico (contratos legados + novos trades)
-        lucro_fixo = 0.0
+        # 3. Agregação dos novos trades por duração
+        # vol_add_futuro[sub, k]: volume líquido (compra - venda) que afeta o nível futuro k
+        # custo_add_futuro[k]: fluxo financeiro (receita - custo) que afeta o nível futuro k
+        # Um trade com duracao_meses D afeta o mês atual E os níveis k=1..(D-1)
+        vol_add_futuro = Dict(
+            (sub, k) => @expression(sp,
+                sum(
+                    (volume_compra[i] - volume_venda[i])
+                    for i in 1:num_trades
+                    if dados.trades.submercado[i] == sub && dados.trades.duracao_meses[i] > k;
+                    init=0.0
+                )
+            )
+            for sub in dados.submercados, k in 1:5
+        )
+        custo_add_futuro = Dict(
+            k => @expression(sp,
+                sum(
+                    (volume_venda[i] * dados.trades.preco_venda[i] - volume_compra[i] * dados.trades.preco_compra[i]) * dados.horas / ESCALA
+                    for i in 1:num_trades
+                    if dados.trades.duracao_meses[i] > k;
+                    init=0.0
+                )
+            )
+            for k in 1:5
+        )
+        
+        # 4. Equações de transição do pipeline temporal
+        for sub in dados.submercados
+            for k in 1:4
+                @constraint(sp, vol_futuro[sub, k].out == vol_futuro[sub, k+1].in + vol_add_futuro[sub, k])
+            end
+            @constraint(sp, vol_futuro[sub, 5].out == vol_add_futuro[sub, 5])
+        end
+        for k in 1:4
+            @constraint(sp, custo_futuro[k].out == custo_futuro[k+1].in + custo_add_futuro[k])
+        end
+        @constraint(sp, custo_futuro[5].out == custo_add_futuro[5])
+        
+        # 5. Lucro determinístico do mês atual
+        lucro_legado = 0.0
         for sub in dados.submercados
             receita_venda_exist = dados.preco_venda_exist[sub] * dados.vol_venda_exist[sub] * dados.horas
             custo_compra_exist = dados.preco_compra_exist[sub] * dados.vol_compra_exist[sub] * dados.horas
-            lucro_fixo += (receita_venda_exist - custo_compra_exist) / ESCALA
+            lucro_legado += (receita_venda_exist - custo_compra_exist) / ESCALA
         end
         
-        lucro_trades = @expression(sp, lucro_fixo)
-        for sub in dados.submercados
-            trades_sub = findall(row -> row.submercado == sub, eachrow(dados.trades))
-            if !isempty(trades_sub)
-                for i in trades_sub
-                    lucro_trades += (volume_venda[i] * dados.trades.preco_venda[i] - volume_compra[i] * dados.trades.preco_compra[i]) * dados.horas / ESCALA
-                end
-            end
-        end
+        # Custo dos novos trades no mês atual (duracao >= 1, ou seja, todos)
+        custo_novos_trades_mes_atual = @expression(sp,
+            sum(
+                (volume_venda[i] * dados.trades.preco_venda[i] - volume_compra[i] * dados.trades.preco_compra[i]) * dados.horas / ESCALA
+                for i in 1:num_trades;
+                init=0.0
+            )
+        )
         
-        # 4. Variáveis auxiliares para lucro spot (estocástico)
+        # fluxo_contratos: legado + novos trades mês atual + liquidação de contratos herdados
+        fluxo_contratos = @expression(sp, lucro_legado + custo_novos_trades_mes_atual + custo_futuro[1].in)
+        
+        # 6. Variáveis auxiliares para lucro spot (estocástico)
         @variable(sp, spot_profit[dados.submercados])
         
-        # 5. Restrição de transição de estado (estrutural)
-        @constraint(sp, transicao_caixa, caixa.out == caixa.in + lucro_trades + sum(spot_profit[sub] for sub in dados.submercados))
+        # 7. Restrição de transição de estado (estrutural)
+        @constraint(sp, transicao_caixa, caixa.out == caixa.in + fluxo_contratos + sum(spot_profit[sub] for sub in dados.submercados))
         
-        # 6. Restrição de limite de crédito (ruína)
+        # 8. Restrição de limite de crédito (ruína)
         @constraint(sp, limite_ruina, caixa.out >= limite_credito_escala)
         
-        # 7. Restrições "molde" para spot_profit (serão modificadas no parameterize)
+        # 9. Restrições "molde" para spot_profit (serão modificadas no parameterize)
         @constraint(sp, spot_profit_eq[sub in dados.submercados], spot_profit[sub] == 0.0)
         
-        # 8. Parameterização estocástica (modifica coeficientes)
+        # 10. Parameterização estocástica (modifica coeficientes)
         SDDP.parameterize(sp, dados.ruidos) do ω
             for sub in dados.submercados
                 pld_horas = (ω.pld[sub] * dados.horas) / ESCALA
@@ -192,19 +235,21 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
                 rhs_val = exposicao_base * pld_horas
                 JuMP.set_normalized_rhs(spot_profit_eq[sub], rhs_val)
                 
-                # Coeficientes: novos trades afetam exposição ao spot
+                # Coeficientes: novos trades do mês atual afetam exposição ao spot
                 trades_sub = findall(row -> row.submercado == sub, eachrow(dados.trades))
                 if !isempty(trades_sub)
                     for i in trades_sub
-                        # Compra reduz exposição (coef positivo), venda aumenta (coef negativo)
                         JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_compra[i], -pld_horas)
                         JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_venda[i], pld_horas)
                     end
                 end
+                
+                # Posição física herdada do passado que liquida hoje no spot
+                JuMP.set_normalized_coefficient(spot_profit_eq[sub], vol_futuro[sub, 1].in, -pld_horas)
             end
             
             # Objetivo: lucro total (trades + spot)
-            @stageobjective(sp, lucro_trades + sum(spot_profit[sub] for sub in dados.submercados))
+            @stageobjective(sp, fluxo_contratos + sum(spot_profit[sub] for sub in dados.submercados))
         end
     end
     
