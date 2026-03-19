@@ -26,6 +26,7 @@ function preprocess_data(config::SDDPConfig, data::MarketData)
         contratos_mes = filter(r -> r.data == mes, contratos_filtrado)
         vol_compra_exist, vol_venda_exist, preco_compra_exist, preco_venda_exist =
             _contratos_por_submercado(submercados, contratos_mes)
+        trades_mes = filter(r -> r.data == mes, trades_filtrado)
         dados_por_mes[t] = (
             mes                = mes,
             submercados        = submercados,
@@ -33,7 +34,8 @@ function preprocess_data(config::SDDPConfig, data::MarketData)
             vol_venda_exist    = vol_venda_exist,
             preco_compra_exist = preco_compra_exist,
             preco_venda_exist  = preco_venda_exist,
-            trades             = filter(r -> r.data == mes, trades_filtrado),
+            trades             = trades_mes,
+            trades_por_sub     = _trades_por_sub(submercados, trades_mes),
             horas              = horas_mes(mes)
         )
         for cenario in cenarios_selecionados
@@ -141,8 +143,7 @@ function build_sddp_model(meses, cenarios_selecionados, dados_por_mes, trajetori
             pld_horas = (ω.pld[sub] * dados.horas) / ESCALA
             exposicao_base = ω.geracao[sub] + dados.vol_compra_exist[sub] - dados.vol_venda_exist[sub]
             JuMP.set_normalized_rhs(spot_profit_eq[sub], exposicao_base * pld_horas)
-            trades_sub = findall(r -> r.submercado == sub, eachrow(dados.trades))
-            for i in trades_sub
+            for i in dados.trades_por_sub[sub]
                 JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_compra[i], -pld_horas)
                 JuMP.set_normalized_coefficient(spot_profit_eq[sub], volume_venda[i],   pld_horas)
             end

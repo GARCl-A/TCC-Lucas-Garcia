@@ -97,6 +97,14 @@ function _preprocess_base(config::SDDPConfig, data::MarketData)
     return meses, submercados, cenarios_selecionados, contratos_filtrado, trades_filtrado, idx_pld, idx_geracao
 end
 
+# Pré-computa índices de trades por submercado — evita findall dentro do parameterize
+function _trades_por_sub(submercados, trades_mes::DataFrame)
+    return Dict{String, Vector{Int}}(
+        sub => findall(i -> trades_mes.submercado[i] == sub, 1:nrow(trades_mes))
+        for sub in submercados
+    )
+end
+
 function _contratos_por_submercado(submercados, contratos_mes)
     vol_compra_exist   = Dict{String, Float64}()
     vol_venda_exist    = Dict{String, Float64}()
