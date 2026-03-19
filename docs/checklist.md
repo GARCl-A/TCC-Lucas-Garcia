@@ -101,5 +101,8 @@ Ajustes finos da função objetivo.
 - [X] 📊 Gerar gráficos/visualizações
 - [X] 📚 Comparar com literatura
 - [X] 🎯 SDDP
-- [] Adicionar saldo no SDDP e no JuMP
+- [X] Adicionar saldo no SDDP e no JuMP
 - [] Revisar a modelagem matemática (.tex), separando SDDP de JuMP
+
+- [] Escrever a modelagem usada no SDDP e as gerações de dados. (I/O, Considerações).
+- [] Avaliar cenários práticos que façam sentido pra fazer um paper de discussão dos cenários com SDDP.

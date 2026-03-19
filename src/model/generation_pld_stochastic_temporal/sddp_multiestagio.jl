@@ -174,9 +174,7 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
         @variable(sp, spot_profit[dados.submercados])
         
         # 5. Restrição de transição de estado (estrutural)
-        @constraint(sp, transicao_caixa, 
-            caixa.out == caixa.in + lucro_trades + sum(spot_profit[sub] for sub in dados.submercados)
-        )
+        @constraint(sp, transicao_caixa, caixa.out == caixa.in + lucro_trades + sum(spot_profit[sub] for sub in dados.submercados))
         
         # 6. Restrição de limite de crédito (ruína)
         @constraint(sp, limite_ruina, caixa.out >= limite_credito_escala)
