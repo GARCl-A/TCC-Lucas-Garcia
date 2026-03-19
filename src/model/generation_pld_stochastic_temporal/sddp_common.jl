@@ -103,12 +103,27 @@ function _contratos_por_submercado(submercados, contratos_mes)
     preco_compra_exist = Dict{String, Float64}()
     preco_venda_exist  = Dict{String, Float64}()
     for sub in submercados
-        compras = filter(r -> r.submercado == sub && r.tipo == "COMPRA", contratos_mes)
-        vendas  = filter(r -> r.submercado == sub && r.tipo == "VENDA",  contratos_mes)
-        vol_compra_exist[sub]   = nrow(compras) > 0 ? sum(compras.volume_mwm) : 0.0
-        vol_venda_exist[sub]    = nrow(vendas)  > 0 ? sum(vendas.volume_mwm)  : 0.0
-        preco_compra_exist[sub] = nrow(compras) > 0 ? sum(compras.volume_mwm .* compras.preco_r_mwh) / sum(compras.volume_mwm) : 0.0
-        preco_venda_exist[sub]  = nrow(vendas)  > 0 ? sum(vendas.volume_mwm  .* vendas.preco_r_mwh)  / sum(vendas.volume_mwm)  : 0.0
+        vol_compra_exist[sub]   = 0.0
+        vol_venda_exist[sub]    = 0.0
+        preco_compra_exist[sub] = 0.0
+        preco_venda_exist[sub]  = 0.0
+    end
+    if nrow(contratos_mes) > 0
+        grupos = groupby(contratos_mes, [:submercado, :tipo])
+        for key in keys(grupos)
+            sub = key.submercado
+            tipo = key.tipo
+            df_grupo = grupos[key]
+            vol_total = sum(df_grupo.volume_mwm)
+            preco_medio = sum(df_grupo.volume_mwm .* df_grupo.preco_r_mwh) / vol_total
+            if tipo == "COMPRA"
+                vol_compra_exist[sub] = vol_total
+                preco_compra_exist[sub] = preco_medio
+            elseif tipo == "VENDA"
+                vol_venda_exist[sub] = vol_total
+                preco_venda_exist[sub] = preco_medio
+            end
+        end
     end
     return vol_compra_exist, vol_venda_exist, preco_compra_exist, preco_venda_exist
 end
