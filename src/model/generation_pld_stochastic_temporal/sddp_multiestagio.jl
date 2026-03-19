@@ -292,7 +292,7 @@ function simulate_policy(model, config::SDDPConfig, meses, dados_por_mes)
     
     simulations = SDDP.simulate(model, config.num_simulations, [:caixa])
     
-    lucros_totais = [sum(stage[:stage_objective] for stage in sim) * 1e6 for sim in simulations]
+    lucros_totais = [sim[end][:caixa].out * 1e6 for sim in simulations]
     retorno_esperado = mean(lucros_totais) / 1e6
     desvio_padrao = std(lucros_totais) / 1e6
     
