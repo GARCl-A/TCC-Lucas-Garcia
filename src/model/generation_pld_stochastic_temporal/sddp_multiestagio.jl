@@ -28,8 +28,8 @@ function load_sddp_config()
         42,      # Seed para reprodutibilidade
         0.95,    # Alpha do CVaR
         0.01,    # Lambda (peso do risco)
-        3,      # Iterações do SDDP
-        100      # Simulações
+        20,      # Iterações do SDDP
+        2000      # Simulações
     )
 end
 
@@ -201,6 +201,19 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
             lucro_legado += (receita_venda_exist - custo_compra_exist) / ESCALA
         end
         
+        # Custo dos novos trades no mês atual. 
+        # Independentemente da duração, neste mês pagamos/recebemos apenas o fluxo relativo a 1 mês.
+        custo_novos_trades_mes_atual = @expression(sp,
+            sum(
+                (volume_venda[i] * dados.trades.preco_venda[i] - volume_compra[i] * dados.trades.preco_compra[i]) * dados.horas / ESCALA
+                for i in 1:num_trades;
+                init=0.0
+            )
+        )
+        
+        # fluxo_contratos: legado + parcela deste mês dos novos trades + parcela herdada de meses passados (custo_futuro[1].in)
+        fluxo_contratos = @expression(sp, lucro_legado + custo_novos_trades_mes_atual + custo_futuro[1].in)
+        
         # Custo dos novos trades no mês atual (duracao >= 1, ou seja, todos)
         custo_novos_trades_mes_atual = @expression(sp,
             sum(
@@ -219,8 +232,9 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
         # 7. Restrição de transição de estado (estrutural)
         @constraint(sp, transicao_caixa, caixa.out == caixa.in + fluxo_contratos + sum(spot_profit[sub] for sub in dados.submercados))
         
-        # 8. Restrição de limite de crédito (ruína)
-        @constraint(sp, limite_ruina, caixa.out >= limite_credito_escala)
+        # 8. Restrição de limite de crédito (ruína) COM SLACK
+        @variable(sp, 0 <= emprestimo_emergencia)
+        @constraint(sp, limite_ruina, caixa.out + emprestimo_emergencia >= limite_credito_escala)
         
         # 9. Restrições "molde" para spot_profit (serão modificadas no parameterize)
         @constraint(sp, spot_profit_eq[sub in dados.submercados], spot_profit[sub] == 0.0)
@@ -248,8 +262,8 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
                 JuMP.set_normalized_coefficient(spot_profit_eq[sub], vol_futuro[sub, 1].in, -pld_horas)
             end
             
-            # Objetivo: lucro total (trades + spot)
-            @stageobjective(sp, fluxo_contratos + sum(spot_profit[sub] for sub in dados.submercados))
+            # Objetivo: lucro total (trades + spot) - Multa por falência
+            @stageobjective(sp, fluxo_contratos + sum(spot_profit[sub] for sub in dados.submercados) - (10000.0 * emprestimo_emergencia))
         end
     end
     
