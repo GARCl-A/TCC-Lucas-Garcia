@@ -148,7 +148,9 @@ function build_sddp_model(config::SDDPConfig, data::MarketData)
         dados = dados_por_mes[t]
         ω = trajetorias[cenario][t]
         
-        print("\r   Nó ($t, $markov_state)/$(length(meses))")
+        total_nos = length(meses) * ncen
+        no_atual = (t - 1) * ncen + markov_state
+        print("\r   Construindo nós: $no_atual/$total_nos")
         flush(stdout)
         
         # 1. Variáveis de estado: caixa + pipeline temporal de contratos forward
