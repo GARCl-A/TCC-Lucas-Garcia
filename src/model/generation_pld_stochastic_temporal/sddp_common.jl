@@ -73,7 +73,7 @@ function _preprocess_base(config::SDDPConfig, data::MarketData)
     println("⚙️  Pré-processando dados...")
     todos_meses = sort(unique(data.cenarios.data))
     meses       = todos_meses[1:min(config.num_meses, length(todos_meses))]
-    submercados = unique(data.cenarios.submercado)
+    submercados = String.(unique(data.cenarios.submercado))
     usinas      = unique(data.geracao.usina_cod)
     num_cenarios_total = maximum(data.cenarios.cenario)
     Random.seed!(config.seed)
