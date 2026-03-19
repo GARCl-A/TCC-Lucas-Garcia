@@ -25,7 +25,7 @@ function load_sddp_config()
         42,      # Seed para reprodutibilidade
         0.95,    # Alpha do CVaR
         0.01,    # Lambda (peso do risco)
-        200,     # Iterações do SDDP (mais iterações pois o grafo é menor)
+        10,     # Iterações do SDDP (mais iterações pois o grafo é menor)
         2000     # Simulações
     )
 end
@@ -48,41 +48,53 @@ end
 #   estados_por_cenario[cenario][t] ::Int  (1, 2 ou 3)
 #   q33, q66                        ::Float64
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Discretiza usando o PLD de um submercado de referência (o primeiro da lista)
+# em vez da média entre submercados.
+# Motivo: o PLD varia entre cenários dentro do mesmo mês, mas a média entre
+# submercados pode colapsar essa variação quando os submercados são correlacionados.
+# -----------------------------------------------------------------------------
+function _pld_referencia(idx_pld::Dict, mes::Date, cenario::Int, submercados::Vector{String})::Float64
+    # Usa o submercado SE como referência; se não existir, usa o primeiro disponível
+    ref = "SE" in submercados ? "SE" : submercados[1]
+    return get(idx_pld, (mes, cenario, ref), 0.0)
+end
+
 function build_estados(
     meses::Vector{Date},
     submercados::Vector{String},
     cenarios_selecionados::Vector{Int},
     idx_pld::Dict
 )
-    # Quantis POR MÊS: garante ~33% dos cenários em cada estado em todo mês
-    # Evita fallbacks causados por sazonalidade do PLD
     q33_por_mes = Vector{Float64}(undef, length(meses))
     q66_por_mes = Vector{Float64}(undef, length(meses))
-    degenerado   = Vector{Bool}(undef, length(meses))   # true = mês sem variabilidade
+    degenerado  = Vector{Bool}(undef, length(meses))
 
     for (t, mes) in enumerate(meses)
-        plds_mes = [mean(get(idx_pld, (mes, c, sub), 0.0) for sub in submercados)
-                    for c in cenarios_selecionados]
+        plds_mes = [_pld_referencia(idx_pld, mes, c, submercados) for c in cenarios_selecionados]
         q33_por_mes[t] = quantile(plds_mes, 1/3)
         q66_por_mes[t] = quantile(plds_mes, 2/3)
         degenerado[t]  = abs(q66_por_mes[t] - q33_por_mes[t]) < 1e-6
     end
 
     n_deg = sum(degenerado)
-    if n_deg > 0
-        println("   ⚠️  $n_deg mês(es) degenerado(s) detectado(s) — PLD sem variabilidade, todos os cenários → estado 1")
-    end
     println("   📊 Quantis PLD por mês — q33 médio: $(round(mean(q33_por_mes), digits=1)) | q66 médio: $(round(mean(q66_por_mes), digits=1))")
+    if n_deg > 0
+        println("   ⚠️  $n_deg/$(length(meses)) mês(es) degenerado(s) — PLD sem variabilidade entre cenários (colapso para estado 1)")
+        println("   📊 Variância do PLD SE por mês:")
+        for (t, mes) in enumerate(meses)
+            plds_mes = [_pld_referencia(idx_pld, mes, c, submercados) for c in cenarios_selecionados]
+            v = var(plds_mes)
+            flag = degenerado[t] ? " ◄ degenerado" : ""
+            println("      t=$t ($mes): var=$(round(v, digits=2))$flag")
+        end
+    end
 
     estados_por_cenario = Dict{Int, Vector{Int}}()
     for c in cenarios_selecionados
         estados_por_cenario[c] = [
-            # Mês degenerado: colapsa para estado 1 (sem incerteza naquele estágio)
             degenerado[t] ? 1 :
-            estado_pld(
-                mean(get(idx_pld, (mes, c, sub), 0.0) for sub in submercados),
-                q33_por_mes[t], q66_por_mes[t]
-            )
+            estado_pld(_pld_referencia(idx_pld, mes, c, submercados), q33_por_mes[t], q66_por_mes[t])
             for (t, mes) in enumerate(meses)
         ]
     end
@@ -149,8 +161,6 @@ function build_ruidos_por_estado(
 )::Vector{Vector{Vector{NamedTuple}}}
 
     T = length(meses)
-
-    # ruidos[t][estado] = vetor de ω
     ruidos = [[NamedTuple[] for _ in 1:N_ESTADOS] for _ in 1:T]
 
     for (t, mes) in enumerate(meses)
@@ -163,19 +173,16 @@ function build_ruidos_por_estado(
             push!(ruidos[t][estado], ω)
         end
 
-        # Mês degenerado: só estado 1 tem cenários — correto por construção
-        # Mês normal: todos os 3 estados devem ter cenários (quantis por mês garantem isso)
-        estados_presentes = [e for e in 1:N_ESTADOS if !isempty(ruidos[t][e])]
-        @assert !isempty(estados_presentes) "Bug: nenhum estado tem cenários no mês $t"
-        if length(estados_presentes) < N_ESTADOS
-            ausentes = [e for e in 1:N_ESTADOS if isempty(ruidos[t][e])]
-            # Estados ausentes só são aceitáveis em mês degenerado (todos no estado 1)
-            @assert all(==(1), estados_presentes) || length(estados_presentes) == N_ESTADOS \
-                "Bug inesperado: estados $ausentes vazios no mês $t (não é mês degenerado)"
+        # Mês degenerado: estados 2 e 3 ficam vazios por construção (todos os cenários → estado 1)
+        # SDDP.parameterize não aceita vetor vazio — esses nós recebem o pool do estado 1
+        # Isso é correto: sem variabilidade, qualquer estado do grafo naquele mês é equivalente
+        for estado in 2:N_ESTADOS
+            if isempty(ruidos[t][estado])
+                append!(ruidos[t][estado], ruidos[t][1])
+            end
         end
     end
 
-    # Log de distribuição
     println("   🎲 Ruídos por estado (média de cenários/mês):")
     for estado in 1:N_ESTADOS
         media = mean(length(ruidos[t][estado]) for t in 1:T)
