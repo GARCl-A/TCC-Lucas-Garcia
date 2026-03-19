@@ -111,11 +111,14 @@ SDDP ao eliminar fatores de desconto nas equações de transição de caixa.
     % SDDP.parameterize(sp, dados.ruidos_por_estado[estado])
     % probabilidade implícita uniforme pelo SDDP.jl
 
-    \item $\mathbf{P} \in \mathbb{R}^{3 \times 3}$: Matriz de transição estacionária da cadeia
-    de Markov, onde $P_{ij} = \Pr(m_{t+1} = j \mid m_t = i)$. A matriz é estimada agregando
-    as transições ao longo de todo o horizonte, assumindo a estacionariedade do processo de
-    estados.
-    % build_transition_matrix → P[i,j] = contagens[i,j] / sum(contagens[i,:])
+    \item $\mathbf{P}^{(t)} \in \mathbb{R}^{3 \times 3}$: Matriz de transição dependente do
+    tempo, onde $P^{(t)}_{ij} = \Pr(m_{t+1} = j \mid m_t = i)$. Para transições em direção
+    a estágios com variabilidade climática ($t+1$ não degenerado), utiliza-se a matriz
+    empírica $\mathbf{P}^{emp}$ estimada das trajetórias históricas. Para transições
+    direcionadas a estágios degenerados ($t+1$ degenerado), utiliza-se a matriz absorvente
+    $\mathbf{P}^{deg}$ que colapsa todas as probabilidades para o estado base
+    ($P^{deg}_{i1} = 1,\; P^{deg}_{ij} = 0\; \forall j \neq 1$).
+    % build_transition_matrices → Pt[t] = degenerado[t+1] ? P_deg : P_empirica
 
     \item $\pi_0 \in \mathbb{R}^3$: Distribuição inicial dos estados Markovianos no estágio $t=1$.
     % root_probs = contagem_inicial / sum(contagem_inicial)
@@ -136,13 +139,14 @@ O estado Markoviano $m_t \in \mathcal{M}$ é determinado pelo PLD do submercado 
 históricos. A discretização por quantis induz equiprobabilidade apenas nos meses com
 variabilidade climática suficiente. Em estágios degenerados --- onde a variância dos preços
 projetados é nula --- ocorre o colapso empírico dos cenários para o estado base
-($m = 1$), e os estados $m \in \{2, 3\}$ ficam vazios ($\Omega_{t,m} = \emptyset$). Para
-manter a viabilidade computacional da matriz de transição estacionária $\mathbf{P}$ sem
-gerar nós vazios, o modelo adota um \emph{fallback} condicional, populando os estados
-inexistentes com as realizações do estado base. Embora essa aproximação garanta a correta
-precificação física e financeira do ativo nesses períodos, ela altera a interpretação
-estatística estrita da independência condicional da Cadeia de Markov, representando uma
-concessão pragmática para a tratabilidade no SDDP.
+($m = 1$), e os estados $m \in \{2, 3\}$ ficam vazios ($\Omega_{t,m} = \emptyset$). A
+adoção de matrizes de transição não-estacionárias $\mathbf{P}^{(t)}$ garante que a
+probabilidade de transição para estados inexistentes seja estritamente nula, preservando
+formalmente a independência condicional do processo de decisão de Markov (MDP). Os estados
+vazios recebem um ruído \emph{dummy} de zeros exclusivamente para satisfazer a tipagem do
+\texttt{SDDP.parameterize}; como a probabilidade de acesso a esses estados é zero pela
+construção de $\mathbf{P}^{(t)}$, eles nunca são avaliados na função objetivo e não
+introduzem qualquer distorção estatística no modelo.
 
 \subsection{Submercado de Referência}
 
@@ -182,25 +186,39 @@ Nesse caso, todos os cenários são atribuídos ao estado 1:
 % degenerado[t] = abs(q66_por_mes[t] - q33_por_mes[t]) < 1e-6
 % degenerado[t] ? 1 : estado_pld(...)
 
-\subsection{Estimação da Matriz de Transição}
+\subsection{Estimação da Matriz Empírica}
 
-A matriz $\mathbf{P}$ é estimada por contagem de frequências nas trajetórias históricas:
+A matriz empírica $\mathbf{P}^{emp}$ é estimada por contagem de frequências nas trajetórias
+históricas, considerando apenas transições entre estágios não degenerados:
 
 \begin{align}
     N_{ij} = \sum_{c \in \mathcal{C}} \sum_{t=1}^{T-1}
     \mathbf{1}\bigl[m_t(c) = i\bigr] \cdot \mathbf{1}\bigl[m_{t+1}(c) = j\bigr]
+    \cdot \mathbf{1}\bigl[\neg\,\text{deg}(t)\bigr] \cdot \mathbf{1}\bigl[\neg\,\text{deg}(t+1)\bigr]
 \end{align}
 
 \begin{align}
-    P_{ij} =
+    P^{emp}_{ij} =
     \begin{cases}
         \dfrac{N_{ij}}{\sum_{j'} N_{ij'}} & \text{se } \sum_{j'} N_{ij'} > 0 \\[6pt]
         \dfrac{1}{|\mathcal{M}|}           & \text{caso contrário (fallback uniforme)}
     \end{cases}
 \end{align}
-% build_transition_matrix:
-%   contagens[seq[t], seq[t+1]] += 1
-%   P[i,:] = contagens[i,:] / total   (ou 1/N_ESTADOS se total == 0)
+% build_transition_matrices:
+%   if !degenerado[t] && !degenerado[t+1]: contagens[seq[t], seq[t+1]] += 1
+%   P_empirica[i,:] = contagens[i,:] / total   (ou 1/N_ESTADOS se total == 0)
+
+O vetor de matrizes $\mathbf{P}^{(t)}$ é então montado como:
+
+\begin{align}
+    \mathbf{P}^{(t)} =
+    \begin{cases}
+        \mathbf{P}^{deg} & \text{se } \text{deg}(t+1) \\
+        \mathbf{P}^{emp} & \text{caso contrário}
+    \end{cases}
+    \quad t = 1, \ldots, T-1
+\end{align}
+% Pt[t] = degenerado[t+1] ? P_deg : P_empirica
 
 % =============================================================================
 \section{Variáveis de Decisão}
@@ -433,8 +451,8 @@ a função de custo futuro (aproximada por cortes de Benders) em cada nó.
 O grafo de política é um $\mathbf{MarkovianGraph}$ com $T$ estágios e $|\mathcal{M}| = 3$
 estados por estágio. Cada nó é o par $(t, m) \in \mathcal{T} \times \mathcal{M}$.
 
-A probabilidade de transição do nó $(t, m)$ para o nó $(t+1, m')$ é $P_{mm'}$.
-% SDDP.MarkovianGraph(stages=T, transition_matrix=P, root_node_transition=root_probs)
+A probabilidade de transição do nó $(t, m)$ para o nó $(t+1, m')$ é $P^{(t)}_{mm'}$.
+% SDDP.MarkovianGraph(stages=T, transition_matrix=Pt, root_node_transition=root_probs)
 
 \subsection{Incerteza Residual Dentro do Estado}
 
@@ -449,7 +467,7 @@ uniformemente de $\Omega_{t,m}$:
 
 Isso separa dois níveis de incerteza:
 \begin{enumerate}
-    \item \textbf{Nível Markoviano}: qual estado $m_{t+1}$ será atingido, governado por $\mathbf{P}$.
+    \item \textbf{Nível Markoviano}: qual estado $m_{t+1}$ será atingido, governado por $\mathbf{P}^{(t)}$.
     \item \textbf{Nível Residual}: qual realização $\omega$ ocorre dentro do estado $m_t$,
     governado pela distribuição empírica de $\Omega_{t,m}$.
 \end{enumerate}
@@ -509,7 +527,7 @@ com parâmetros:
     % iteration_limit = 10
     \item Simulações Monte Carlo (avaliação da política): 2000.
     % num_simulations = 2000
-    \item Cenários históricos usados para estimar $\mathbf{P}$ e $\Omega_{t,m}$: 2000.
+    \item Cenários históricos usados para estimar $\mathbf{P}^{(t)}$ e $\Omega_{t,m}$: 2000.
     % num_cenarios = 2000
     \item Seed de reprodutibilidade: 42.
     % seed = 42

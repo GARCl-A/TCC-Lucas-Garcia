@@ -152,10 +152,10 @@ function build_transition_matrices(
     # Monta vetor de T-1 matrizes, uma por transição t → t+1
     Pt = Vector{Matrix{Float64}}(undef, num_meses - 1)
     for t in 1:(num_meses - 1)
-        Pt[t] = (degenerado[t] || degenerado[t+1]) ? P_deg : P_empirica
+        Pt[t] = degenerado[t+1] ? P_deg : P_empirica
     end
 
-    n_deg_trans = sum(degenerado[t] || degenerado[t+1] for t in 1:(num_meses-1))
+    n_deg_trans = sum(degenerado[t+1] for t in 1:(num_meses-1))
     println("   📊 Transições degeneradas: $n_deg_trans/$(num_meses-1)")
 
     return Pt
