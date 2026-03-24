@@ -230,9 +230,14 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
         end
     end
 
+    max_d = maximum(trades.duracao_meses)
+    # x_n
     @variable(model, saldo_no[n=nos])
-    @variable(model, posicao_futura_volume[sub=subs, k=1:5, n=nos])
-    @variable(model, posicao_futura_custo[k=1:5, n=nos])
+    # v_{s,k,n}
+    @variable(model, posicao_futura_volume[sub=subs, k=1:max_d, n=nos])
+    # c_{s,k,n}
+    @variable(model, receita_futura[sub=subs, k=1:max_d, n=nos])
+    # VaR, η_n
     @variable(model, VaR)
     @variable(model, desvio_cvar[n=folhas] >= 0)
 
@@ -246,10 +251,11 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
 
         trades_no = [t for t in 1:NT if trades.data[t] == mes]
 
-        for sub in subs
+for sub in subs
             trades_sub = filter(t -> trades.submercado[t] == sub, trades_no)
 
-            for k in 1:4
+            # Transição do volume para k = 1 até max_d - 1
+            for k in 1:(max_d - 1)
                 delta_volume_k = isempty(trades_sub) ? AffExpr(0.0) : sum(
                     (volume_compra_trade[t,n] - volume_venda_trade[t,n])
                     for t in trades_sub if trades.duracao_meses[t] > k;
@@ -262,43 +268,52 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
                 end
             end
 
-            delta_volume_5 = isempty(trades_sub) ? AffExpr(0.0) : sum(
+            # Fronteira final do volume (k = max_d)
+            delta_volume_max = isempty(trades_sub) ? AffExpr(0.0) : sum(
                 (volume_compra_trade[t,n] - volume_venda_trade[t,n])
-                for t in trades_sub if trades.duracao_meses[t] > 5;
+                for t in trades_sub if trades.duracao_meses[t] > max_d;
                 init=AffExpr(0.0)
             )
-            @constraint(model, posicao_futura_volume[sub,5,n] == delta_volume_5)
+            @constraint(model, posicao_futura_volume[sub,max_d,n] == delta_volume_max)
         end
 
-        # Pipeline financeiro armazena R$/MWh; horas são aplicadas na transição de saldo
-        for k in 1:4
-            delta_custo_k = isempty(trades_no) ? AffExpr(0.0) : sum(
+        # c_{s,k,n} = c_{s,k+1,a(n)} + sum_{d_i > k, s_i = s}( q^S*K^S - q^B*K^B )
+        for sub in subs
+            trades_sub = filter(t -> trades.submercado[t] == sub, trades_no)
+
+            # Transição da receita para k = 1 até max_d - 1
+            for k in 1:(max_d - 1)
+                delta_receita_k = isempty(trades_sub) ? AffExpr(0.0) : sum(
+                    (volume_venda_trade[t,n] * trades.preco_venda[t] -
+                     volume_compra_trade[t,n] * trades.preco_compra[t])
+                    for t in trades_sub if trades.duracao_meses[t] > k;
+                    init=AffExpr(0.0)
+                )
+                if pai == 0
+                    @constraint(model, receita_futura[sub,k,n] == delta_receita_k)
+                else
+                    @constraint(model, receita_futura[sub,k,n] == receita_futura[sub,k+1,pai] + delta_receita_k)
+                end
+            end
+
+            # Fronteira final da receita (k = max_d)
+            delta_receita_max = isempty(trades_sub) ? AffExpr(0.0) : sum(
                 (volume_venda_trade[t,n] * trades.preco_venda[t] -
                  volume_compra_trade[t,n] * trades.preco_compra[t])
-                for t in trades_no if trades.duracao_meses[t] > k;
+                for t in trades_sub if trades.duracao_meses[t] > max_d;
                 init=AffExpr(0.0)
             )
-            if pai == 0
-                @constraint(model, posicao_futura_custo[k,n] == delta_custo_k)
-            else
-                @constraint(model, posicao_futura_custo[k,n] == posicao_futura_custo[k+1,pai] + delta_custo_k)
-            end
+            @constraint(model, receita_futura[sub,max_d,n] == delta_receita_max)
         end
 
-        delta_custo_5 = isempty(trades_no) ? AffExpr(0.0) : sum(
-            (volume_venda_trade[t,n] * trades.preco_venda[t] -
-             volume_compra_trade[t,n] * trades.preco_compra[t])
-            for t in trades_no if trades.duracao_meses[t] > 5;
-            init=AffExpr(0.0)
-        )
-        @constraint(model, posicao_futura_custo[5,n] == delta_custo_5)
-
+        # R_n^{leg}
         lucro_contratos_existentes = sum(
             (get(mercado.preco_venda_exist,  (mes,sub), 0.0) * get(mercado.vol_venda_exist,  (mes,sub), 0.0) -
              get(mercado.preco_compra_exist, (mes,sub), 0.0) * get(mercado.vol_compra_exist, (mes,sub), 0.0)) * h / ESCALA
             for sub in subs; init=0.0
         )
 
+        # sum_{i in I_n}( q^S*K^S - q^B*K^B )  — parcela corrente do pipeline financeiro
         receita_novos_trades = isempty(trades_no) ? AffExpr(0.0) : sum(
             (volume_venda_trade[t,n] * trades.preco_venda[t] -
              volume_compra_trade[t,n] * trades.preco_compra[t])
@@ -306,30 +321,32 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
             init=AffExpr(0.0)
         )
 
-        custo_herdado_pai = (pai == 0) ? AffExpr(0.0) : 1.0 * posicao_futura_custo[1,pai]
+        # sum_s c_{s,1,a(n)}
+        receita_herdada_pai = (pai == 0) ? AffExpr(0.0) : sum(receita_futura[sub,1,pai] for sub in subs)
 
+        # E_{s,n} = G_{s,n} + V^{0B} - V^{0S} + sum(q^B) - sum(q^S) + v_{s,1,a(n)}
         exposicao_spot = AffExpr(0.0)
         for sub in subs
-            pld          = get(cenarios.pld_no,      (n, sub), 0.0)
-            producao     = get(cenarios.producao_no,  (n, sub), 0.0)
-            compra_exist = get(mercado.vol_compra_exist, (mes,sub), 0.0)
-            venda_exist  = get(mercado.vol_venda_exist,  (mes,sub), 0.0)
+            pld          = get(cenarios.pld_no,          (n, sub), 0.0)  # P_{s,n}
+            producao     = get(cenarios.producao_no,      (n, sub), 0.0)  # G_{s,n}
+            compra_exist = get(mercado.vol_compra_exist,  (mes,sub), 0.0) # V^{0B}
+            venda_exist  = get(mercado.vol_venda_exist,   (mes,sub), 0.0) # V^{0S}
 
-            trades_sub = filter(t -> trades.submercado[t] == sub, trades_no)
+            trades_sub  = filter(t -> trades.submercado[t] == sub, trades_no)
             compra_nova = isempty(trades_sub) ? AffExpr(0.0) : sum(volume_compra_trade[t,n] for t in trades_sub; init=AffExpr(0.0))
             venda_nova  = isempty(trades_sub) ? AffExpr(0.0) : sum(volume_venda_trade[t,n]  for t in trades_sub; init=AffExpr(0.0))
 
-            # posição comprada herdada do pai entra com sinal positivo na exposição
-            volume_herdado_pai = (pai == 0) ? 0.0 : posicao_futura_volume[sub,1,pai]
+            volume_herdado_pai = (pai == 0) ? 0.0 : posicao_futura_volume[sub,1,pai] # v_{s,1,a(n)}
             exposicao_sub = producao + compra_exist + compra_nova - venda_exist - venda_nova + volume_herdado_pai
 
             add_to_expression!(exposicao_spot, exposicao_sub * pld * h / ESCALA)
         end
 
+        # x_n = x_{a(n)} + R^{leg} + [ sum(q^S*K^S - q^B*K^B) + c_{1,a(n)} ]*h/E_scale + sum_s E_{s,n}*P_{s,n}*h/E_scale
         saldo_pai = (pai == 0) ? AffExpr(config.caixa_inicial / ESCALA) : 1.0 * saldo_no[pai]
         @constraint(model,
             saldo_no[n] == saldo_pai + lucro_contratos_existentes +
-                           (receita_novos_trades + custo_herdado_pai) * (h / ESCALA) + exposicao_spot
+                           (receita_novos_trades + receita_herdada_pai) * (h / ESCALA) + exposicao_spot
         )
 
         @constraint(model, saldo_no[n] >= config.limite_credito)
@@ -342,18 +359,22 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     end
     println()
 
+    # E[x] = sum_{n in L} π_n * x_n
     @expression(model, saldo_esperado,
         sum(cenarios.prob_no[n] * saldo_no[n] for n in folhas)
     )
 
+    # η_n >= VaR - x_n
     @constraint(model, restricao_cvar[n=folhas],
         desvio_cvar[n] >= VaR - saldo_no[n]
     )
 
+    # CVaR = VaR - 1/(1-α) * sum π_n * η_n
     @expression(model, cvar_saldo,
         VaR - (1 / (1 - config.alpha)) * sum(cenarios.prob_no[n] * desvio_cvar[n] for n in folhas)
     )
 
+    # max E[x] + λ * CVaR
     @objective(model, Max, saldo_esperado + config.lambda * cvar_saldo)
 
     println("Otimizando...")

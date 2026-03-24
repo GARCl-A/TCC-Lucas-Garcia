@@ -1,0 +1,139 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{amsmath, amssymb}
+\usepackage[margin=2.5cm]{geometry}
+
+\title{Formulação do Equivalente Determinístico Multiestágio}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+Para a implementação do Equivalente Determinístico (DEQ) em formato de árvore de cenários, as variáveis e restrições são indexadas por nós da árvore, preservando a dependência intertemporal e a não-antecipatividade.
+
+\section{Conjuntos e Índices}
+\begin{itemize}
+    \item $\mathcal{N}$: Conjunto de todos os nós da árvore de cenários.
+    \item $\mathcal{L} \subset \mathcal{N}$: Subconjunto dos nós folha (último estágio da árvore).
+    \item $a(n)$: Nó pai do nó $n$.
+    \item $\mathcal{S}$: Conjunto de submercados.
+    \item $\mathcal{I}$: Conjunto de todos os \textit{trades} (contratos) disponíveis no horizonte.
+    \item $\mathcal{I}_n \subseteq \mathcal{I}$: Subconjunto de \textit{trades} cuja data de início é estritamente igual ao mês de ocorrência do nó $n$.
+    \item $\mathcal{K} = \{1, \dots, D_{\max}\}$: \textit{Pipeline} temporal de duração dos contratos (em meses defasados), onde $D_{\max} = \max_{i \in \mathcal{I}} (d_i)$.
+\end{itemize}
+
+\section{Parâmetros}
+\begin{itemize}
+    \item $\pi_n$: Probabilidade incondicional de atingir o nó $n \in \mathcal{N}$.
+    \item $h_n$: Número de horas no mês correspondente ao nó $n$.
+    \item $E_{\text{scale}}$: Fator de escala financeira (ex: $10^6$ para conversão em milhões de R\$).
+    \item $C_{\text{inicial}}$: Saldo de caixa inicial da empresa no momento zero.
+    \item $L^{\text{cred}}$: Limite mínimo de crédito ou saldo em caixa permitido.
+    \item $P_{s,n}$: Preço de Liquidação de Diferenças (PLD) no submercado $s$, nó $n$.
+    \item $G_{s,n}$: Geração física consolidada no submercado $s$, nó $n$.
+    \item $V_{s,n}^{0B}, V_{s,n}^{0S}$: Volume consolidado (MWm) de contratos legados de compra e venda.
+    \item $K_{s,n}^{0B}, K_{s,n}^{0S}$: Preço médio ponderado consolidado (R\$/MWh) dos contratos legados.
+    \item $\bar{q}_i^B, \bar{q}_i^S$: Limites máximos permitidos para compra e venda do \textit{trade} $i$.
+    \item $K_i^B, K_i^S$: Preços fixos de compra e venda do \textit{trade} $i$.
+    \item $d_i$: Duração em meses do \textit{trade} $i$.
+    \item $s_i$: Submercado de liquidação do \textit{trade} $i$.
+    \item $\lambda$: Fator de aversão ao risco.
+    \item $\alpha$: Nível de confiança do CVaR.
+\end{itemize}
+
+\section{Variáveis de Decisão e Estado}
+\begin{itemize}
+    \item $q_{i,n}^B, q_{i,n}^S \ge 0$: Volume comprado e vendido do \textit{trade} $i$ no nó $n$ (MWm).
+    \item $v_{s,k,n} \in \mathbb{R}$: \textit{Pipeline} de volume físico do submercado $s$, na defasagem $k$, nó $n$ (MWm).
+    \item $c_{s,k,n} \in \mathbb{R}$: \textit{Pipeline} de exposição financeira do submercado $s$, na defasagem $k$, nó $n$ (R\$/h).
+    \item $x_n \in \mathbb{R}$: Saldo de caixa financeiro acumulado no nó $n$.
+    \item $\mathrm{VaR} \in \mathbb{R}$: \textit{Value-at-Risk} no horizonte final.
+    \item $\eta_n \ge 0$: Variável de desvio de perda no nó folha $n$ para cálculo do CVaR.
+\end{itemize}
+
+\section{Restrições do Modelo}
+
+\paragraph{Condições de Contorno e Inicialização}
+Para o nó raiz (onde $a(n) = 0$), os estados herdados do passado são definidos como nulos, e o caixa é inicializado com o capital preexistente:
+\begin{align}
+    x_0 &= \frac{C_{\text{inicial}}}{E_{\text{scale}}} \\
+    v_{s,k,0} &= 0 \quad \forall\, s \in \mathcal{S},\ k \in \mathcal{K} \\
+    c_{s,k,0} &= 0 \quad \forall\, s \in \mathcal{S},\ k \in \mathcal{K}
+\end{align}
+
+\paragraph{Limites de Operação e Não-Antecipatividade}
+Os volumes negociados estão limitados aos lotes máximos.
+Para garantir a causalidade temporal e impedir que o modelo acione decisões futuras antes do tempo, as variáveis de \textit{trades} são estritamente nulas se o nó não pertencer ao mês de início do contrato:
+\begin{align}
+    0 \le q_{i,n}^B &\le \bar{q}_i^B \quad \forall\, n \in \mathcal{N},\ \forall\, i \in \mathcal{I}_n \\
+    0 \le q_{i,n}^S &\le \bar{q}_i^S \quad \forall\, n \in \mathcal{N},\ \forall\, i \in \mathcal{I}_n \\
+    q_{i,n}^B = 0,\ q_{i,n}^S &= 0 \quad \forall\, n \in \mathcal{N},\ \forall\, i \notin \mathcal{I}_n
+\end{align}
+
+\paragraph{Transição do Pipeline de Volumes}
+A posição comprada ou vendida transita ao longo dos estágios enquanto a duração do contrato for superior à defasagem $k$.
+O estado herda a posição do nó pai acrescida das novas contratações do mês vigente:
+\begin{align}
+    v_{s,k,n} &= v_{s,k+1,a(n)} + \sum_{\substack{i \in \mathcal{I}_n \\ d_i > k,\ s_i = s}} \left(q_{i,n}^B - q_{i,n}^S\right)
+    \quad \forall\, s \in \mathcal{S},\ k \in \{1,\dots,D_{\max}-1\},\ n \in \mathcal{N} \\
+    v_{s,D_{\max},n} &= \sum_{\substack{i \in \mathcal{I}_n \\ d_i > D_{\max},\ s_i = s}} \left(q_{i,n}^B - q_{i,n}^S\right)
+    \quad \forall\, s \in \mathcal{S},\ n \in \mathcal{N}
+\end{align}
+
+\paragraph{Transição do Pipeline Financeiro}
+De forma análoga aos volumes, a taxa de exposição de caixa (R\$/h) dos contratos travados herda o histórico dos meses anteriores, indexada por submercado:
+\begin{align}
+    c_{s,k,n} &= c_{s,k+1,a(n)} + \sum_{\substack{i \in \mathcal{I}_n \\ d_i > k,\ s_i = s}} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right)
+    \quad \forall\, s \in \mathcal{S},\ k \in \{1,\dots,D_{\max}-1\},\ n \in \mathcal{N} \\
+    c_{s,D_{\max},n} &= \sum_{\substack{i \in \mathcal{I}_n \\ d_i > D_{\max},\ s_i = s}} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right)
+    \quad \forall\, s \in \mathcal{S},\ n \in \mathcal{N}
+\end{align}
+
+\paragraph{Exposição Físico-Financeira ao Mercado Spot}
+Balanço entre a energia física disponível e a entregue por submercado.
+A posição física comprada no passado ($k=1$) é injetada no balanço corrente com sinal positivo, provendo energia para liquidação:
+\begin{equation}
+    E_{s,n} = G_{s,n} + V_{s,n}^{0B} - V_{s,n}^{0S}
+              + \sum_{\substack{i \in \mathcal{I}_n \\ s_i = s}} q_{i,n}^B
+              - \sum_{\substack{i \in \mathcal{I}_n \\ s_i = s}} q_{i,n}^S
+              + v_{s,1,a(n)}
+    \quad \forall\, s \in \mathcal{S},\ n \in \mathcal{N}
+\end{equation}
+
+\paragraph{Equação de Transição de Caixa}
+A variável de estado central intertemporal. O saldo no nó atual herda o saldo do pai acrescido dos fluxos de resultado do mês corrente.
+A conversão da base horária ($h_n$) e da escala financeira ($E_{\text{scale}}$) ocorre apenas na injeção de caixa:
+\begin{multline}
+    x_n = x_{a(n)} + R_n^{\text{leg}}
+          + \left[ \sum_{i \in \mathcal{I}_n} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right) + \sum_{s \in \mathcal{S}} c_{s,1,a(n)} \right] \frac{h_n}{E_{\text{scale}}} \\
+          + \sum_{s \in \mathcal{S}} E_{s,n}\, P_{s,n} \frac{h_n}{E_{\text{scale}}}
+    \quad \forall\, n \in \mathcal{N}
+\end{multline}
+onde $R_n^{\text{leg}}$ é o resultado financeiro determinístico da carteira legada no mês:
+\begin{equation}
+    R_n^{\text{leg}} = \sum_{s \in \mathcal{S}} \left(V_{s,n}^{0S} K_{s,n}^{0S} - V_{s,n}^{0B} K_{s,n}^{0B}\right) \frac{h_n}{E_{\text{scale}}}
+\end{equation}
+
+\paragraph{Restrições de Crédito e Risco}
+O saldo não pode violar a margem mínima de crédito estabelecida corporativamente, e o desvio de CVaR é contabilizado exclusivamente sobre os estados terminais:
+\begin{align}
+    x_n     &\ge L^{\text{cred}}          \quad \forall\, n \in \mathcal{N} \\
+    \eta_n  &\ge \mathrm{VaR} - x_n       \quad \forall\, n \in \mathcal{L}
+\end{align}
+
+\section{Função Objetivo}
+
+A diretriz ótima é obtida maximizando uma soma ponderada (regulada pelo fator de aversão ao risco $\lambda$) entre a riqueza final esperada e o risco de cauda (CVaR), avaliada apenas sobre os nós folha:
+\begin{equation}
+    \max \quad \mathbb{E}[x] + \lambda \cdot \mathrm{CVaR}
+\end{equation}
+\begin{align}
+    \mathbb{E}[x]   &= \sum_{n \in \mathcal{L}} \pi_n\, x_n \\
+    \mathrm{CVaR}   &= \mathrm{VaR} - \frac{1}{1 - \alpha} \sum_{n \in \mathcal{L}} \pi_n\, \eta_n
+\end{align}
+
+\end{document}
