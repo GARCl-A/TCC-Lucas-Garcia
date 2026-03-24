@@ -22,16 +22,29 @@ struct MarketData
 end
 
 function load_deq_config()
+    data_dir = joinpath(@__DIR__, "..", "..", "..", "data", "processed")
+    
+    # 1. Dá uma "espiada" rápida no arquivo gerado pelo Python
+    # (Lemos apenas as colunas necessárias para ficar super rápido)
+    arquivo_cenarios = joinpath(data_dir, "cenarios_final.csv")
+    df_temp = CSV.read(arquivo_cenarios, DataFrame, select=["data", "cenario"])
+    
+    # 2. Descobre Y (meses) e X (cenários) automaticamente
+    y_meses = length(unique(df_temp.data))
+    x_cenarios = length(unique(df_temp.cenario))
+    
+    println("⚙️ Autoconfiguração: Encontrados $x_cenarios cenários ($y_meses meses) no CSV.")
+
     return DEQConfig(
-        joinpath(@__DIR__, "..", "..", "..", "data", "processed"),
-        0.95,    # alpha CVaR
-        0.5,     # lambda (peso do risco)
-        4,       # meses
-        2,       # ramos por nó
-        42,      # seed
-        0.0,     # caixa inicial
-        -100.0,  # limite de crédito (R$ Mi)
-        1e6      # escala: R$ milhões
+        data_dir,
+        0.95,             # alpha CVaR
+        0.05,              # lambda (peso do risco)
+        y_meses,          # meses: Y (Automático!)
+        x_cenarios,       # ramos: (Automático para a árvore do DEQ)
+        42,               # seed
+        0.0,              # caixa inicial
+        -100.0,           # limite de crédito (R$ Mi)
+        1e9               # escala: R$ milhões
     )
 end
 
@@ -251,7 +264,21 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
 
         trades_no = [t for t in 1:NT if trades.data[t] == mes]
 
-for sub in subs
+        if pai != 0 && !isempty(trades_no)
+            # Busca todos os nós que vieram deste mesmo pai
+            irmaos = [m for m in nos if cenarios.no_pai[m] == pai]
+            primeiro_irmao = irmaos[1]
+            
+            # Se o nó atual não for o primeiro irmão, trava as variáveis dele nas do primeiro
+            if n != primeiro_irmao
+                for t in trades_no
+                    @constraint(model, volume_compra_trade[t, n] == volume_compra_trade[t, primeiro_irmao])
+                    @constraint(model, volume_venda_trade[t, n] == volume_venda_trade[t, primeiro_irmao])
+                end
+            end
+        end
+
+        for sub in subs
             trades_sub = filter(t -> trades.submercado[t] == sub, trades_no)
 
             # Transição do volume para k = 1 até max_d - 1
@@ -382,7 +409,7 @@ for sub in subs
     optimize!(model)
     tempo_solver = time() - t0_solver
 
-    status = termination_status(model)
+    status = JuMP.termination_status(model)
     if status == MOI.OPTIMAL
         println("  Status: OTIMO ($(round(tempo_solver, digits=1))s)")
         println("  Saldo Esperado : R\$ $(round(value(saldo_esperado), digits=3)) Mi")

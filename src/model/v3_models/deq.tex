@@ -66,12 +66,17 @@ Para o nó raiz (onde $a(n) = 0$), os estados herdados do passado são definidos
 \end{align}
 
 \paragraph{Limites de Operação e Não-Antecipatividade}
-Os volumes negociados estão limitados aos lotes máximos.
-Para garantir a causalidade temporal e impedir que o modelo acione decisões futuras antes do tempo, as variáveis de \textit{trades} são estritamente nulas se o nó não pertencer ao mês de início do contrato:
+Os volumes negociados estão limitados aos lotes máximos. Para garantir a causalidade temporal e impedir que o modelo acione decisões futuras antes do tempo, as variáveis de \textit{trades} são estritamente nulas se o nó não pertencer ao mês de início do contrato:
 \begin{align}
     0 \le q_{i,n}^B &\le \bar{q}_i^B \quad \forall\, n \in \mathcal{N},\ \forall\, i \in \mathcal{I}_n \\
     0 \le q_{i,n}^S &\le \bar{q}_i^S \quad \forall\, n \in \mathcal{N},\ \forall\, i \in \mathcal{I}_n \\
     q_{i,n}^B = 0,\ q_{i,n}^S &= 0 \quad \forall\, n \in \mathcal{N},\ \forall\, i \notin \mathcal{I}_n
+\end{align}
+
+Adicionalmente, como o Equivalente Determinístico opera sob um paradigma onde a incerteza é revelada nos nós da árvore, impõe-se a \textbf{Restrição de Não-Antecipatividade Estrita}. Esta restrição garante que decisões tomadas em um determinado momento do tempo sejam idênticas para todos os cenários possíveis que compartilham o mesmo histórico até aquele momento (mesmo nó pai), alinhando a modelagem ao comportamento \textit{Decision-Hazard}:
+\begin{align}
+    q_{i,m}^B &= q_{i,n}^B \quad \forall\, m, n \in \mathcal{N} \text{ tais que } a(m) = a(n) \\
+    q_{i,m}^S &= q_{i,n}^S \quad \forall\, m, n \in \mathcal{N} \text{ tais que } a(m) = a(n)
 \end{align}
 
 \paragraph{Transição do Pipeline de Volumes}
@@ -121,7 +126,7 @@ onde $R_n^{\text{leg}}$ é o resultado financeiro determinístico da carteira le
 \paragraph{Restrições de Crédito e Risco}
 O saldo não pode violar a margem mínima de crédito estabelecida corporativamente, e o desvio de CVaR é contabilizado exclusivamente sobre os estados terminais:
 \begin{align}
-    x_n     &\ge L^{\text{cred}}          \quad \forall\, n \in \mathcal{N} \\
+    x_n     &\ge L^{\text{cred}}          \quad \forall\, n \in \mathcal{N} \label{eq:credito} \\
     \eta_n  &\ge \mathrm{VaR} - x_n       \quad \forall\, n \in \mathcal{L}
 \end{align}
 
@@ -135,5 +140,63 @@ A diretriz ótima é obtida maximizando uma soma ponderada (regulada pelo fator 
     \mathbb{E}[x]   &= \sum_{n \in \mathcal{L}} \pi_n\, x_n \\
     \mathrm{CVaR}   &= \mathrm{VaR} - \frac{1}{1 - \alpha} \sum_{n \in \mathcal{L}} \pi_n\, \eta_n
 \end{align}
+
+% ==============================================================
+\section{Implementação via SDDP e Recurso Completo Relativo}
+% ==============================================================
+
+\subsection{Topologia do Grafo de Decisão (Policy Graph)}
+
+A formulação multiestágio é estruturada sob a abstração de um \textit{Policy Graph} (Grafo de Políticas), conforme proposto por Dowson e Kapelevich. Definimos o grafo direcionado $\mathcal{G} = (\mathcal{V}, \mathcal{E})$, onde a dinâmica temporal e o processo estocástico são representados pela topologia da rede.
+
+Para este modelo de comercialização de energia, adota-se uma topologia de Grafo Linear, refletindo a progressão sequencial e determinística dos meses do horizonte de planejamento:
+\begin{itemize}
+    \item \textbf{Vértices (Estágios):} O conjunto de nós $\mathcal{V} = \{1, 2, \dots, T\}$ representa cada mês do horizonte de simulação.
+    \item \textbf{Arestas (Transições):} O conjunto de arestas direcionadas $\mathcal{E} = \{(t, t+1) \mid t = 1, \dots, T-1\}$ representa a passagem irreversível do tempo.
+    \item \textbf{Dinâmica de Transição:} A probabilidade de transição entre nós é determinística. Estar no nó $t$ implica, com probabilidade $1$, a transição para o nó $t+1$.
+\end{itemize}
+
+Nesta arquitetura, a incerteza do problema não governa a transição entre os nós da rede, mas atua como uma variável aleatória $\omega_t \in \Omega_t$ (composta pelas realizações de Geração e PLD) revelada localmente no nó $t$, sob o paradigma \textit{Decision-Hazard}. O agente decisor observa o estado transferido pelo nó $t-1$, toma a decisão de \textit{trading} e, em seguida, o cenário $\omega_t$ se materializa, definindo o fluxo de caixa local e o estado resultante que será transmitido ao nó $t+1$.
+
+\subsection{Recurso Completo Relativo e a Variável de Folga $\sigma_t$}
+
+\paragraph{Definição formal.}
+Um problema de programação estocástica multiestágio satisfaz a propriedade de \textbf{recurso completo relativo} (\textit{relatively complete recourse}) se, para todo estado $x_t$ atingível a partir do estado inicial e para toda realização $\omega_t \in \Omega_t$, o subproblema do estágio $t$ admite solução viável. Formalmente, seja $\mathcal{X}_t$ o conjunto de estados atingíveis no estágio $t$; exige-se que
+\begin{equation}
+    \forall\, x_t \in \mathcal{X}_t,\quad \forall\, \omega_t \in \Omega_t : \quad \mathcal{F}_t(x_t, \omega_t) \neq \emptyset,
+\end{equation}
+onde $\mathcal{F}_t(x_t, \omega_t)$ denota o conjunto viável do subproblema condicionado ao estado $x_t$ e à realização $\omega_t$.
+
+\paragraph{Por que o DEQ não requer modificação.}
+No Equivalente Determinístico, a restrição de crédito~\eqref{eq:credito} participa de um único programa linear de grande porte que engloba todos os nós da árvore simultaneamente. O solver pode, portanto, ajustar as decisões de \textit{trading} em estágios anteriores de modo a prevenir qualquer violação futura. A variável $x_n$ é declarada livre ($x_n \in \mathbb{R}$) e a restrição $x_n \ge L^{\text{cred}}$ é uma desigualdade global do LP, não um limite rígido sobre uma variável de estado isolada. A viabilidade do DEQ é, assim, uma propriedade emergente da otimização conjunta sobre toda a árvore.
+
+\paragraph{Por que o SDDP requer a folga.}
+No algoritmo SDDP, cada subproblema do estágio $t$ é resolvido de forma independente, com o estado de entrada $x_t$ fixado pelo passo \textit{forward}. A equação de transição de caixa
+\begin{equation}
+    x_{t+1} = x_t + R_t^{\text{leg}} + \left[\,\cdot\,\right]\frac{h_t}{E_{\text{scale}}} + \sum_{s \in \mathcal{S}} E_{s,t}\,P_{s,t}\,\frac{h_t}{E_{\text{scale}}}
+\end{equation}
+contém o termo estocástico $P_{s,t}(\omega_t)$ e $G_{s,t}(\omega_t)$, que não são controláveis pelas decisões $q^B, q^S$ de forma irrestrita (ambas são limitadas superiormente). Para uma realização adversa $\omega_t$, pode ocorrer que nenhuma escolha admissível de $(q^B, q^S)$ satisfaça simultaneamente a igualdade de transição e o limite inferior do estado $x_{t+1} \ge L^{\text{cred}}$, tornando o subproblema inviável e interrompendo o algoritmo.
+
+\paragraph{Formulação com folga (implementação SDDP).}
+Para garantir recurso completo relativo, introduz-se a variável de folga $\sigma_t \ge 0$, interpretada economicamente como uma linha de crédito emergencial acionada apenas quando os fluxos de caixa realizados são insuficientes para manter o saldo acima do limite corporativo. A equação de transição de caixa passa a ser:
+\begin{equation}
+    x_{t+1} = x_t + R_t^{\text{leg}}
+              + \left[ \sum_{i \in \mathcal{I}_t} \left(q_{i,t}^S K_i^S - q_{i,t}^B K_i^B\right) + \sum_{s \in \mathcal{S}} c_{s,1,t} \right] \frac{h_t}{E_{\text{scale}}}
+              + \sum_{s \in \mathcal{S}} E_{s,t}\, P_{s,t} \frac{h_t}{E_{\text{scale}}}
+              + \sigma_t
+    \label{eq:transicao_sddp}
+\end{equation}
+com $\sigma_t \ge 0$ e sem limite inferior rígido sobre o estado $x_{t+1}$. A função objetivo do estágio $t$ é penalizada pelo uso da folga com coeficiente $M \gg 1$:
+\begin{equation}
+    f_t =
+    \begin{cases}
+        x_{T+1} - M\,\sigma_T & \text{se } t = T \\
+        -M\,\sigma_t           & \text{se } t < T
+    \end{cases}
+    \label{eq:obj_sddp}
+\end{equation}
+
+\paragraph{Consistência entre DEQ e SDDP.}
+Seja $x^*$ a solução ótima do DEQ, com $x_n^* \ge L^{\text{cred}}$ para todo $n \in \mathcal{N}$. Nessa solução, $\sigma_t = 0$ para todo $t$, pois a restrição de crédito nunca é violada. Portanto, a política ótima do SDDP com penalidade $M$ suficientemente grande coincide com a política ótima do DEQ: o valor ótimo convergido pelo SDDP é idêntico ao valor ótimo do DEQ, e a folga $\sigma_t$ permanece nula ao longo de toda trajetória ótima. A adição de $\sigma_t$ é, assim, uma modificação de implementação — necessária para garantir a viabilidade dos subproblemas durante o treinamento — sem alterar o modelo matemático formal nem o valor da solução ótima.
 
 \end{document}

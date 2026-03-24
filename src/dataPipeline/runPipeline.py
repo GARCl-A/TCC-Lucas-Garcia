@@ -1,17 +1,18 @@
-from dataCleanScripts import readCmarg, readPatamar
-from dataProcessScripts import processPatamar
-from utils import timeFix
-from generators import generation_stochastic, contracts, trades
+# from dataCleanScripts import readCmarg, readPatamar
+# from dataProcessScripts import processPatamar
+# from utils import timeFix
+from generators import generation_stochastic, contracts, trades, pld
 
 
 def main():
     print("Iniciando Pipeline")
 
     # Fase 1: Preços
-    readCmarg.main()
-    readPatamar.converter_patamar()
-    processPatamar.processar_merge_final()
-    timeFix.aplicar_timeshift()
+    # readCmarg.main()
+    # readPatamar.converter_patamar()
+    # processPatamar.processar_merge_final()
+    # timeFix.aplicar_timeshift()
+    pld.pld_gen()
 
     # Fase 2: Física
     generation_stochastic.main()

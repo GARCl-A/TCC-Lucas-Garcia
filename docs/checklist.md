@@ -107,9 +107,9 @@ Ajustes finos da função objetivo.
 - [] Reescrever a modelagem usada no SDDP e as gerações de dados. (I/O, Considerações).
 - [] Avaliar cenários práticos que façam sentido pra fazer um paper de discussão dos cenários com SDDP.
 --------------------
-- [] Faz um toy 
-- [] Se certificar de que o sddp_multiestagio e o det_eq estão corretos. !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-- [] Escrever modelagem do SDDP (policy graph)
-- [] Escrever modelagem do policy_graph
+- [X] Faz um toy 
+- [X] Se certificar de que o sddp_multiestagio e o det_eq estão corretos. !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+- [X] Escrever modelagem do SDDP (policy graph)
+- [X] Escrever modelagem do policy_graph
 - [] Gerador de PLD
 - [] Instalar Cplex -> pra benders
