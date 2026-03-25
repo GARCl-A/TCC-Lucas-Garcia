@@ -71,7 +71,7 @@ def pld_gen():
     # 3. GERAR CENÁRIOS SINTÉTICOS E ÚNICOS
     # ==========================================
     num_cenarios = 5
-    meses_simulacao = 7
+    meses_simulacao = 6
     data_inicio = "2026-01-01"
     data_base = datetime.strptime(data_inicio, "%Y-%m-%d")
 

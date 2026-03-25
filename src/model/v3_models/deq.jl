@@ -23,28 +23,25 @@ end
 
 function load_deq_config()
     data_dir = joinpath(@__DIR__, "..", "..", "..", "data", "processed")
-    
-    # 1. Dá uma "espiada" rápida no arquivo gerado pelo Python
-    # (Lemos apenas as colunas necessárias para ficar super rápido)
+
     arquivo_cenarios = joinpath(data_dir, "cenarios_final.csv")
     df_temp = CSV.read(arquivo_cenarios, DataFrame, select=["data", "cenario"])
-    
-    # 2. Descobre Y (meses) e X (cenários) automaticamente
-    y_meses = length(unique(df_temp.data))
+
+    y_meses    = length(unique(df_temp.data))
     x_cenarios = length(unique(df_temp.cenario))
-    
+
     println("⚙️ Autoconfiguração: Encontrados $x_cenarios cenários ($y_meses meses) no CSV.")
 
     return DEQConfig(
         data_dir,
-        0.95,             # alpha CVaR
-        0.05,              # lambda (peso do risco)
-        y_meses,          # meses: Y (Automático!)
-        x_cenarios,       # ramos: (Automático para a árvore do DEQ)
-        42,               # seed
-        0.0,              # caixa inicial
-        -100.0,           # limite de crédito (R$ Mi)
-        1e9               # escala: R$ milhões
+        0.95,    # alpha CVaR
+        0.05,    # lambda (peso do risco)
+        y_meses,
+        x_cenarios,
+        42,      # seed
+        0.0,     # caixa inicial (R$)
+        -1e8,    # limite de crédito (-100 Mi em R$); dividido por escala = -0.1 internamente
+        1e9      # escala: valores internos em R$/1e9
     )
 end
 
@@ -69,7 +66,7 @@ struct ArvoreCenarios
     nos::Vector{Int}
     folhas::Vector{Int}
     no_pai::Dict{Int,Int}
-    mes_do_no::Dict{Int,Date}
+    mes_do_no::Dict{Int,Union{Date,Nothing}}
     prob_no::Dict{Int,Float64}
     pld_no::Dict{Tuple{Int,String},Float64}
     producao_no::Dict{Tuple{Int,String},Float64}
@@ -98,35 +95,35 @@ function build_scenario_tree(data::MarketData, config::DEQConfig)::ArvoreCenario
     idx_geracao = Dict((r.data, r.cenario, r.submercado) => r.geracao_total for r in eachrow(geracao_agregada))
 
     nos_por_estagio = [R^t for t in 1:T]
-    total_nos_estimado = 1 + sum(nos_por_estagio)
-    println("  Arvore: $total_nos_estimado nos estimados, $(nos_por_estagio[end]) folhas")
+    println("  Arvore: $(1 + sum(nos_por_estagio)) nos, $(nos_por_estagio[end]) folhas")
 
-    cenarios_por_estagio = [sort(randperm(num_cenarios)[1:R]) for _ in 1:T]
+    # Cada estágio usa todos os R cenários disponíveis (mesma distribuição do SDDP)
+    cenarios_por_estagio = [collect(1:R) for _ in 1:T]
 
-    nos       = Int[]
-    folhas    = Int[]
-    no_pai    = Dict{Int,Int}()
-    mes_do_no = Dict{Int,Date}()
-    prob_no   = Dict{Int,Float64}()
-    pld_no    = Dict{Tuple{Int,String},Float64}()
+    nos         = Int[]
+    folhas      = Int[]
+    no_pai      = Dict{Int,Int}()
+    mes_do_no   = Dict{Int,Union{Date,Nothing}}()
+    prob_no     = Dict{Int,Float64}()
+    pld_no      = Dict{Tuple{Int,String},Float64}()
     producao_no = Dict{Tuple{Int,String},Float64}()
 
+    # Nó raiz virtual: sem mês, sem cenário, só inicializa o estado
     id = 1
     push!(nos, id)
-    no_pai[id]    = 0
-    mes_do_no[id] = todos_meses[1]
-    prob_no[id]   = 1.0
-    c1 = cenarios_por_estagio[1][1]
+    no_pai[id]  = 0
+    mes_do_no[id] = nothing
+    prob_no[id] = 1.0
     for sub in submercados
-        pld_no[(id, sub)]    = get(idx_pld,    (todos_meses[1], c1, sub), 0.0)
-        producao_no[(id, sub)] = get(idx_geracao, (todos_meses[1], c1, sub), 0.0)
+        pld_no[(id, sub)]      = 0.0
+        producao_no[(id, sub)] = 0.0
     end
 
     nos_estagio_anterior = [id]
     id += 1
     t0 = time()
 
-    for t in 2:T
+    for t in 1:T
         mes = todos_meses[t]
         nos_estagio_atual = Int[]
         cenarios_t = cenarios_por_estagio[t]
@@ -136,11 +133,11 @@ function build_scenario_tree(data::MarketData, config::DEQConfig)::ArvoreCenario
                 c = cenarios_t[r]
                 push!(nos, id)
                 push!(nos_estagio_atual, id)
-                no_pai[id]      = pai
-                mes_do_no[id]   = mes
-                prob_no[id]     = prob_no[pai] / R
+                no_pai[id]    = pai
+                mes_do_no[id] = mes
+                prob_no[id]   = prob_no[pai] / R
                 for sub in submercados
-                    pld_no[(id, sub)]    = get(idx_pld,    (mes, c, sub), 0.0)
+                    pld_no[(id, sub)]      = get(idx_pld,    (mes, c, sub), 0.0)
                     producao_no[(id, sub)] = get(idx_geracao, (mes, c, sub), 0.0)
                 end
                 t == T && push!(folhas, id)
@@ -183,21 +180,10 @@ function preprocess_market(data::MarketData, config::DEQConfig)::DadosMercado
         compras = filter(r -> r.tipo == "COMPRA", contratos_ms)
         vendas  = filter(r -> r.tipo == "VENDA",  contratos_ms)
 
-        if nrow(compras) > 0
-            vol_compra_exist[(mes,sub)]   = sum(compras.volume_mwm)
-            preco_compra_exist[(mes,sub)] = sum(compras.volume_mwm .* compras.preco_r_mwh) / sum(compras.volume_mwm)
-        else
-            vol_compra_exist[(mes,sub)]   = 0.0
-            preco_compra_exist[(mes,sub)] = 0.0
-        end
-
-        if nrow(vendas) > 0
-            vol_venda_exist[(mes,sub)]   = sum(vendas.volume_mwm)
-            preco_venda_exist[(mes,sub)] = sum(vendas.volume_mwm .* vendas.preco_r_mwh) / sum(vendas.volume_mwm)
-        else
-            vol_venda_exist[(mes,sub)]   = 0.0
-            preco_venda_exist[(mes,sub)] = 0.0
-        end
+        vol_compra_exist[(mes,sub)]   = nrow(compras) > 0 ? sum(compras.volume_mwm) : 0.0
+        preco_compra_exist[(mes,sub)] = nrow(compras) > 0 ? sum(compras.volume_mwm .* compras.preco_r_mwh) / sum(compras.volume_mwm) : 0.0
+        vol_venda_exist[(mes,sub)]    = nrow(vendas)  > 0 ? sum(vendas.volume_mwm)  : 0.0
+        preco_venda_exist[(mes,sub)]  = nrow(vendas)  > 0 ? sum(vendas.volume_mwm  .* vendas.preco_r_mwh)  / sum(vendas.volume_mwm)  : 0.0
     end
 
     trades_filtrados = filter(r -> r.data in Set(todos_meses), data.trades)
@@ -227,6 +213,7 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     folhas = cenarios.folhas
     subs   = mercado.submercados
     ESCALA = config.escala
+    L_cred = config.limite_credito / ESCALA  # limite em unidades internas
 
     model = Model(HiGHS.Optimizer)
     set_silent(model)
@@ -237,171 +224,149 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     for t in 1:NT, n in nos
         set_upper_bound(volume_compra_trade[t,n], trades.limite_compra[t])
         set_upper_bound(volume_venda_trade[t,n],  trades.limite_venda[t])
-        if trades.data[t] != cenarios.mes_do_no[n]
+        mes_n = cenarios.mes_do_no[n]
+        if isnothing(mes_n) || trades.data[t] != mes_n
             fix(volume_compra_trade[t,n], 0.0; force=true)
             fix(volume_venda_trade[t,n],  0.0; force=true)
         end
     end
 
     max_d = maximum(trades.duracao_meses)
-    # x_n
     @variable(model, saldo_no[n=nos])
-    # v_{s,k,n}
     @variable(model, posicao_futura_volume[sub=subs, k=1:max_d, n=nos])
-    # c_{s,k,n}
     @variable(model, receita_futura[sub=subs, k=1:max_d, n=nos])
-    # VaR, η_n
     @variable(model, VaR)
     @variable(model, desvio_cvar[n=folhas] >= 0)
 
     total_nos = length(nos)
     t0_constraints = time()
 
-    for (idx_n, n) in enumerate(nos)
-        pai = cenarios.no_pai[n]
-        mes = cenarios.mes_do_no[n]
-        h   = horas_mes(mes)
+    filhos_de = Dict{Int, Vector{Int}}()
+    for n in nos
+        push!(get!(filhos_de, cenarios.no_pai[n], Int[]), n)
+    end
 
+    for (idx_n, n) in enumerate(nos)
+        pai    = cenarios.no_pai[n]
+        mes_n  = cenarios.mes_do_no[n]
+
+        # Nó raiz virtual: inicializa estado e avança
+        if isnothing(mes_n)
+            @constraint(model, saldo_no[n] == config.caixa_inicial / ESCALA)
+            for sub in subs, k in 1:max_d
+                fix(posicao_futura_volume[sub, k, n], 0.0; force=true)
+                fix(receita_futura[sub, k, n],        0.0; force=true)
+            end
+            if idx_n % max(1, div(total_nos, 20)) == 0 || idx_n == total_nos
+                print("\r  Constraints: $idx_n/$total_nos ($(round(Int, 100*idx_n/total_nos))%) | $(round(time()-t0_constraints, digits=1))s")
+                flush(stdout)
+            end
+            continue
+        end
+
+        mes = mes_n
+        h   = horas_mes(mes)
         trades_no = [t for t in 1:NT if trades.data[t] == mes]
 
-        if pai != 0 && !isempty(trades_no)
-            # Busca todos os nós que vieram deste mesmo pai
-            irmaos = [m for m in nos if cenarios.no_pai[m] == pai]
-            primeiro_irmao = irmaos[1]
-            
-            # Se o nó atual não for o primeiro irmão, trava as variáveis dele nas do primeiro
+        # Não-antecipatividade: irmãos com mesmo pai tomam a mesma decisão
+        if !isempty(trades_no)
+            primeiro_irmao = filhos_de[pai][1]
             if n != primeiro_irmao
                 for t in trades_no
                     @constraint(model, volume_compra_trade[t, n] == volume_compra_trade[t, primeiro_irmao])
-                    @constraint(model, volume_venda_trade[t, n] == volume_venda_trade[t, primeiro_irmao])
+                    @constraint(model, volume_venda_trade[t, n]  == volume_venda_trade[t, primeiro_irmao])
                 end
             end
         end
 
+        # Transição do pipeline de volumes
         for sub in subs
             trades_sub = filter(t -> trades.submercado[t] == sub, trades_no)
-
-            # Transição do volume para k = 1 até max_d - 1
             for k in 1:(max_d - 1)
-                delta_volume_k = isempty(trades_sub) ? AffExpr(0.0) : sum(
+                delta = isempty(trades_sub) ? AffExpr(0.0) : sum(
                     (volume_compra_trade[t,n] - volume_venda_trade[t,n])
-                    for t in trades_sub if trades.duracao_meses[t] > k;
-                    init=AffExpr(0.0)
-                )
-                if pai == 0
-                    @constraint(model, posicao_futura_volume[sub,k,n] == delta_volume_k)
+                    for t in trades_sub if trades.duracao_meses[t] > k; init=AffExpr(0.0))
+                if pai == 0 || isnothing(cenarios.mes_do_no[pai])
+                    @constraint(model, posicao_futura_volume[sub,k,n] == delta)
                 else
-                    @constraint(model, posicao_futura_volume[sub,k,n] == posicao_futura_volume[sub,k+1,pai] + delta_volume_k)
+                    @constraint(model, posicao_futura_volume[sub,k,n] == posicao_futura_volume[sub,k+1,pai] + delta)
                 end
             end
-
-            # Fronteira final do volume (k = max_d)
-            delta_volume_max = isempty(trades_sub) ? AffExpr(0.0) : sum(
+            delta_max = isempty(trades_sub) ? AffExpr(0.0) : sum(
                 (volume_compra_trade[t,n] - volume_venda_trade[t,n])
-                for t in trades_sub if trades.duracao_meses[t] > max_d;
-                init=AffExpr(0.0)
-            )
-            @constraint(model, posicao_futura_volume[sub,max_d,n] == delta_volume_max)
+                for t in trades_sub if trades.duracao_meses[t] > max_d; init=AffExpr(0.0))
+            @constraint(model, posicao_futura_volume[sub,max_d,n] == delta_max)
         end
 
-        # c_{s,k,n} = c_{s,k+1,a(n)} + sum_{d_i > k, s_i = s}( q^S*K^S - q^B*K^B )
+        # Transição do pipeline financeiro
         for sub in subs
             trades_sub = filter(t -> trades.submercado[t] == sub, trades_no)
-
-            # Transição da receita para k = 1 até max_d - 1
             for k in 1:(max_d - 1)
-                delta_receita_k = isempty(trades_sub) ? AffExpr(0.0) : sum(
-                    (volume_venda_trade[t,n] * trades.preco_venda[t] -
-                     volume_compra_trade[t,n] * trades.preco_compra[t])
-                    for t in trades_sub if trades.duracao_meses[t] > k;
-                    init=AffExpr(0.0)
-                )
-                if pai == 0
-                    @constraint(model, receita_futura[sub,k,n] == delta_receita_k)
+                delta = isempty(trades_sub) ? AffExpr(0.0) : sum(
+                    (volume_venda_trade[t,n] * trades.preco_venda[t] - volume_compra_trade[t,n] * trades.preco_compra[t])
+                    for t in trades_sub if trades.duracao_meses[t] > k; init=AffExpr(0.0))
+                if pai == 0 || isnothing(cenarios.mes_do_no[pai])
+                    @constraint(model, receita_futura[sub,k,n] == delta)
                 else
-                    @constraint(model, receita_futura[sub,k,n] == receita_futura[sub,k+1,pai] + delta_receita_k)
+                    @constraint(model, receita_futura[sub,k,n] == receita_futura[sub,k+1,pai] + delta)
                 end
             end
-
-            # Fronteira final da receita (k = max_d)
-            delta_receita_max = isempty(trades_sub) ? AffExpr(0.0) : sum(
-                (volume_venda_trade[t,n] * trades.preco_venda[t] -
-                 volume_compra_trade[t,n] * trades.preco_compra[t])
-                for t in trades_sub if trades.duracao_meses[t] > max_d;
-                init=AffExpr(0.0)
-            )
-            @constraint(model, receita_futura[sub,max_d,n] == delta_receita_max)
+            delta_max = isempty(trades_sub) ? AffExpr(0.0) : sum(
+                (volume_venda_trade[t,n] * trades.preco_venda[t] - volume_compra_trade[t,n] * trades.preco_compra[t])
+                for t in trades_sub if trades.duracao_meses[t] > max_d; init=AffExpr(0.0))
+            @constraint(model, receita_futura[sub,max_d,n] == delta_max)
         end
 
-        # R_n^{leg}
-        lucro_contratos_existentes = sum(
+        # Resultado legado
+        R_leg = sum(
             (get(mercado.preco_venda_exist,  (mes,sub), 0.0) * get(mercado.vol_venda_exist,  (mes,sub), 0.0) -
              get(mercado.preco_compra_exist, (mes,sub), 0.0) * get(mercado.vol_compra_exist, (mes,sub), 0.0)) * h / ESCALA
-            for sub in subs; init=0.0
-        )
+            for sub in subs; init=0.0)
 
-        # sum_{i in I_n}( q^S*K^S - q^B*K^B )  — parcela corrente do pipeline financeiro
-        receita_novos_trades = isempty(trades_no) ? AffExpr(0.0) : sum(
-            (volume_venda_trade[t,n] * trades.preco_venda[t] -
-             volume_compra_trade[t,n] * trades.preco_compra[t])
-            for t in trades_no;
-            init=AffExpr(0.0)
-        )
+        receita_novos = isempty(trades_no) ? AffExpr(0.0) : sum(
+            (volume_venda_trade[t,n] * trades.preco_venda[t] - volume_compra_trade[t,n] * trades.preco_compra[t])
+            for t in trades_no; init=AffExpr(0.0))
 
-        # sum_s c_{s,1,a(n)}
-        receita_herdada_pai = (pai == 0) ? AffExpr(0.0) : sum(receita_futura[sub,1,pai] for sub in subs)
+        receita_herdada = isnothing(cenarios.mes_do_no[pai]) ? AffExpr(0.0) :
+            sum(receita_futura[sub,1,pai] for sub in subs; init=AffExpr(0.0))
 
-        # E_{s,n} = G_{s,n} + V^{0B} - V^{0S} + sum(q^B) - sum(q^S) + v_{s,1,a(n)}
+        # Exposição spot
         exposicao_spot = AffExpr(0.0)
         for sub in subs
-            pld          = get(cenarios.pld_no,          (n, sub), 0.0)  # P_{s,n}
-            producao     = get(cenarios.producao_no,      (n, sub), 0.0)  # G_{s,n}
-            compra_exist = get(mercado.vol_compra_exist,  (mes,sub), 0.0) # V^{0B}
-            venda_exist  = get(mercado.vol_venda_exist,   (mes,sub), 0.0) # V^{0S}
-
-            trades_sub  = filter(t -> trades.submercado[t] == sub, trades_no)
-            compra_nova = isempty(trades_sub) ? AffExpr(0.0) : sum(volume_compra_trade[t,n] for t in trades_sub; init=AffExpr(0.0))
-            venda_nova  = isempty(trades_sub) ? AffExpr(0.0) : sum(volume_venda_trade[t,n]  for t in trades_sub; init=AffExpr(0.0))
-
-            volume_herdado_pai = (pai == 0) ? 0.0 : posicao_futura_volume[sub,1,pai] # v_{s,1,a(n)}
-            exposicao_sub = producao + compra_exist + compra_nova - venda_exist - venda_nova + volume_herdado_pai
-
-            add_to_expression!(exposicao_spot, exposicao_sub * pld * h / ESCALA)
+            pld          = get(cenarios.pld_no,         (n, sub), 0.0)
+            producao     = get(cenarios.producao_no,     (n, sub), 0.0)
+            compra_exist = get(mercado.vol_compra_exist, (mes,sub), 0.0)
+            venda_exist  = get(mercado.vol_venda_exist,  (mes,sub), 0.0)
+            trades_sub   = filter(t -> trades.submercado[t] == sub, trades_no)
+            compra_nova  = isempty(trades_sub) ? AffExpr(0.0) : sum(volume_compra_trade[t,n] for t in trades_sub; init=AffExpr(0.0))
+            venda_nova   = isempty(trades_sub) ? AffExpr(0.0) : sum(volume_venda_trade[t,n]  for t in trades_sub; init=AffExpr(0.0))
+            vol_herdado  = isnothing(cenarios.mes_do_no[pai]) ? 0.0 : posicao_futura_volume[sub,1,pai]
+            E_sub = producao + compra_exist + compra_nova - venda_exist - venda_nova + vol_herdado
+            add_to_expression!(exposicao_spot, E_sub * pld * h / ESCALA)
         end
 
-        # x_n = x_{a(n)} + R^{leg} + [ sum(q^S*K^S - q^B*K^B) + c_{1,a(n)} ]*h/E_scale + sum_s E_{s,n}*P_{s,n}*h/E_scale
-        saldo_pai = (pai == 0) ? AffExpr(config.caixa_inicial / ESCALA) : 1.0 * saldo_no[pai]
+        # Equação de transição de caixa
+        saldo_pai = isnothing(cenarios.mes_do_no[pai]) ? AffExpr(config.caixa_inicial / ESCALA) : 1.0 * saldo_no[pai]
         @constraint(model,
-            saldo_no[n] == saldo_pai + lucro_contratos_existentes +
-                           (receita_novos_trades + receita_herdada_pai) * (h / ESCALA) + exposicao_spot
-        )
+            saldo_no[n] == saldo_pai + R_leg +
+                (receita_novos + receita_herdada) * (h / ESCALA) + exposicao_spot)
 
-        @constraint(model, saldo_no[n] >= config.limite_credito)
+        # Restrição de crédito em todos os nós
+        @constraint(model, saldo_no[n] >= L_cred)
 
         if idx_n % max(1, div(total_nos, 20)) == 0 || idx_n == total_nos
-            pct = round(Int, 100 * idx_n / total_nos)
-            print("\r  Constraints: $idx_n/$total_nos ($pct%) | $(round(time()-t0_constraints, digits=1))s")
+            print("\r  Constraints: $idx_n/$total_nos ($(round(Int, 100*idx_n/total_nos))%) | $(round(time()-t0_constraints, digits=1))s")
             flush(stdout)
         end
     end
     println()
 
-    # E[x] = sum_{n in L} π_n * x_n
-    @expression(model, saldo_esperado,
-        sum(cenarios.prob_no[n] * saldo_no[n] for n in folhas)
-    )
-
-    # η_n >= VaR - x_n
-    @constraint(model, restricao_cvar[n=folhas],
-        desvio_cvar[n] >= VaR - saldo_no[n]
-    )
-
-    # CVaR = VaR - 1/(1-α) * sum π_n * η_n
+    @expression(model, saldo_esperado, sum(cenarios.prob_no[n] * saldo_no[n] for n in folhas))
+    @constraint(model, restricao_cvar[n=folhas], desvio_cvar[n] >= VaR - saldo_no[n])
     @expression(model, cvar_saldo,
-        VaR - (1 / (1 - config.alpha)) * sum(cenarios.prob_no[n] * desvio_cvar[n] for n in folhas)
-    )
+        VaR - (1 / (1 - config.alpha)) * sum(cenarios.prob_no[n] * desvio_cvar[n] for n in folhas))
 
-    # max E[x] + λ * CVaR
+    # Objetivo conforme .tex: max E[x] + λ·CVaR
     @objective(model, Max, saldo_esperado + config.lambda * cvar_saldo)
 
     println("Otimizando...")
@@ -412,18 +377,43 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     status = JuMP.termination_status(model)
     if status == MOI.OPTIMAL
         println("  Status: OTIMO ($(round(tempo_solver, digits=1))s)")
-        println("  Saldo Esperado : R\$ $(round(value(saldo_esperado), digits=3)) Mi")
-        println("  CVaR ($(round((1-config.alpha)*100, digits=0))%) : R\$ $(round(value(cvar_saldo), digits=3)) Mi")
-        println("  VaR            : R\$ $(round(value(VaR), digits=3)) Mi")
+        println("  Saldo Esperado : R\$ $(round(value(saldo_esperado) * ESCALA / 1e6, digits=3)) Mi")
+        println("  CVaR ($(round((1-config.alpha)*100, digits=0))%) : R\$ $(round(value(cvar_saldo) * ESCALA / 1e6, digits=3)) Mi")
+        println("  VaR            : R\$ $(round(value(VaR) * ESCALA / 1e6, digits=3)) Mi")
 
-        println("\nTrades executados na raiz (mes 1):")
+        # Decisões do mês 1 (primeiro filho do raiz virtual)
+        no_mes1 = filhos_de[1][1]
+        println("\nTrades executados no mês 1 (decisão única, pré-cenário):")
         for t in 1:NT
-            v_compra = value(volume_compra_trade[t, 1])
-            v_venda  = value(volume_venda_trade[t, 1])
-            if v_compra > 0.01 || v_venda > 0.01
-                println("  $(trades.ticker[t]): compra=$(round(v_compra, digits=2)) MWm  venda=$(round(v_venda, digits=2)) MWm")
+            v_c = value(volume_compra_trade[t, no_mes1])
+            v_v = value(volume_venda_trade[t, no_mes1])
+            if v_c > 0.01 || v_v > 0.01
+                println("  $(trades.ticker[t]): compra=$(round(v_c, digits=2)) MWm  venda=$(round(v_v, digits=2)) MWm")
             end
         end
+
+        rows = NamedTuple{(:mes, :no, :ticker, :compra_mwm, :venda_mwm, :saldo_mi),
+                          Tuple{Date,Int,String,Float64,Float64,Float64}}[]
+        for n in nos
+            isnothing(cenarios.mes_do_no[n]) && continue
+            mes = cenarios.mes_do_no[n]
+            trades_no = [t for t in 1:NT if trades.data[t] == mes]
+            saldo_mi  = value(saldo_no[n]) * ESCALA / 1e6
+            for t in trades_no
+                push!(rows, (
+                    mes        = mes,
+                    no         = n,
+                    ticker     = trades.ticker[t],
+                    compra_mwm = round(value(volume_compra_trade[t, n]), digits=4),
+                    venda_mwm  = round(value(volume_venda_trade[t, n]),  digits=4),
+                    saldo_mi   = round(saldo_mi, digits=3)
+                ))
+            end
+        end
+        out_path = joinpath(config.data_dir, "..", "results", "deq_decisoes.csv")
+        mkpath(dirname(out_path))
+        CSV.write(out_path, DataFrame(rows))
+        println("\n  Decisões exportadas: $out_path")
     else
         println("  Status: $status")
     end
