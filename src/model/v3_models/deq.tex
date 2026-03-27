@@ -30,19 +30,19 @@ Para a implementação do Equivalente Determinístico (DEQ) em formato de árvor
 \begin{itemize}
     \item $\pi_n$: Probabilidade incondicional de atingir o nó $n \in \mathcal{N}$.
     \item $h_n$: Número de horas no mês correspondente ao nó $n$.
-    \item $E_{\text{scale}}$: Fator de escala financeira (ex: $10^6$ para conversão em milhões de R\$).
-    \item $C_{\text{inicial}}$: Saldo de caixa inicial da empresa no momento zero.
-    \item $L^{\text{cred}}$: Limite mínimo de crédito ou saldo em caixa permitido.
-    \item $P_{s,n}$: Preço de Liquidação de Diferenças (PLD) no submercado $s$, nó $n$.
-    \item $G_{s,n}$: Geração física consolidada no submercado $s$, nó $n$.
+    \item $C_{\text{inicial}}$: Saldo de caixa inicial da empresa no momento zero (R\$).
+    \item $L^{\text{cred}}$: Limite mínimo de crédito ou saldo em caixa permitido (R\$).
+    \item $P_{s,n}$: Preço de Liquidação de Diferenças (PLD) no submercado $s$, nó $n$ (R\$/MWh).
+    \item $G_{s,n}$: Geração física consolidada no submercado $s$, nó $n$ (MWm).
     \item $V_{s,n}^{0B}, V_{s,n}^{0S}$: Volume consolidado (MWm) de contratos legados de compra e venda.
     \item $K_{s,n}^{0B}, K_{s,n}^{0S}$: Preço médio ponderado consolidado (R\$/MWh) dos contratos legados.
-    \item $\bar{q}_i^B, \bar{q}_i^S$: Limites máximos permitidos para compra e venda do \textit{trade} $i$.
-    \item $K_i^B, K_i^S$: Preços fixos de compra e venda do \textit{trade} $i$.
+    \item $\bar{q}_i^B, \bar{q}_i^S$: Limites máximos permitidos para compra e venda do \textit{trade} $i$ (MWm).
+    \item $K_i^B, K_i^S$: Preços fixos de compra e venda do \textit{trade} $i$ (R\$/MWh).
     \item $d_i$: Duração em meses do \textit{trade} $i$.
     \item $s_i$: Submercado de liquidação do \textit{trade} $i$.
     \item $\lambda$: Fator de aversão ao risco.
     \item $\alpha$: Nível de confiança do CVaR.
+    \item $M$: Penalidade sobre a folga de crédito ($M \gg 1$).
 \end{itemize}
 
 \section{Variáveis de Decisão e Estado}
@@ -50,9 +50,9 @@ Para a implementação do Equivalente Determinístico (DEQ) em formato de árvor
     \item $q_{i,n}^B, q_{i,n}^S \ge 0$: Volume comprado e vendido do \textit{trade} $i$ no nó $n$ (MWm).
     \item $v_{s,k,n} \in \mathbb{R}$: \textit{Pipeline} de volume físico do submercado $s$, na defasagem $k$, nó $n$ (MWm).
     \item $c_{s,k,n} \in \mathbb{R}$: \textit{Pipeline} de exposição financeira do submercado $s$, na defasagem $k$, nó $n$ (R\$/h).
-    \item $x_n \in \mathbb{R}$: Saldo de caixa financeiro acumulado no nó $n$.
-    \item $\mathrm{VaR} \in \mathbb{R}$: \textit{Value-at-Risk} no horizonte final.
-    \item $\eta_n \ge 0$: Variável de desvio de perda no nó folha $n$ para cálculo do CVaR.
+    \item $x_n \in \mathbb{R}$: Saldo de caixa financeiro acumulado no nó $n$ (R\$).
+    \item $\mathrm{VaR} \in \mathbb{R}$: \textit{Value-at-Risk} no horizonte final (R\$).
+    \item $\eta_n \ge 0$: Variável de desvio de perda no nó folha $n$ para cálculo do CVaR (R\$).
 \end{itemize}
 
 \section{Restrições do Modelo}
@@ -60,7 +60,7 @@ Para a implementação do Equivalente Determinístico (DEQ) em formato de árvor
 \paragraph{Condições de Contorno e Inicialização}
 Para o nó raiz (onde $a(n) = 0$), os estados herdados do passado são definidos como nulos, e o caixa é inicializado com o capital preexistente:
 \begin{align}
-    x_0 &= \frac{C_{\text{inicial}}}{E_{\text{scale}}} \\
+    x_0 &= C_{\text{inicial}} \\
     v_{s,k,0} &= 0 \quad \forall\, s \in \mathcal{S},\ k \in \mathcal{K} \\
     c_{s,k,0} &= 0 \quad \forall\, s \in \mathcal{S},\ k \in \mathcal{K}
 \end{align}
@@ -73,7 +73,7 @@ Os volumes negociados estão limitados aos lotes máximos. Para garantir a causa
     q_{i,n}^B = 0,\ q_{i,n}^S &= 0 \quad \forall\, n \in \mathcal{N},\ \forall\, i \notin \mathcal{I}_n
 \end{align}
 
-Adicionalmente, como o Equivalente Determinístico opera sob um paradigma onde a incerteza é revelada nos nós da árvore, impõe-se a \textbf{Restrição de Não-Antecipatividade Estrita}. Esta restrição garante que decisões tomadas em um determinado momento do tempo sejam idênticas para todos os cenários possíveis que compartilham o mesmo histórico até aquele momento (mesmo nó pai), alinhando a modelagem ao comportamento \textit{Decision-Hazard}:
+Adicionalmente, como o Equivalente Determinístico opera sob um paradigma onde a incerteza é revelada nos nós da árvore, impõe-se a \textbf{Restrição de Não-Antecipatividade Estrita}. Esta restrição garante que decisões tomadas em um determinado momento do tempo sejam idênticas para todos os cenários possíveis que compartilham o mesmo histórico até aquele momento (mesmo nó pai), alinhando a modelagem ao comportamento \textit{Hazard-Decision}:
 \begin{align}
     q_{i,m}^B &= q_{i,n}^B \quad \forall\, m, n \in \mathcal{N} \text{ tais que } a(m) = a(n) \\
     q_{i,m}^S &= q_{i,n}^S \quad \forall\, m, n \in \mathcal{N} \text{ tais que } a(m) = a(n)
@@ -110,17 +110,16 @@ A posição física comprada no passado ($k=1$) é injetada no balanço corrente
 \end{equation}
 
 \paragraph{Equação de Transição de Caixa}
-A variável de estado central intertemporal. O saldo no nó atual herda o saldo do pai acrescido dos fluxos de resultado do mês corrente.
-A conversão da base horária ($h_n$) e da escala financeira ($E_{\text{scale}}$) ocorre apenas na injeção de caixa:
+A variável de estado central intertemporal. O saldo no nó atual herda o saldo do pai acrescido dos fluxos de resultado do mês corrente, todos em R\$:
 \begin{multline}
     x_n = x_{a(n)} + R_n^{\text{leg}}
-          + \left[ \sum_{i \in \mathcal{I}_n} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right) + \sum_{s \in \mathcal{S}} c_{s,1,a(n)} \right] \frac{h_n}{E_{\text{scale}}} \\
-          + \sum_{s \in \mathcal{S}} E_{s,n}\, P_{s,n} \frac{h_n}{E_{\text{scale}}}
+          + \left[ \sum_{i \in \mathcal{I}_n} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right) + \sum_{s \in \mathcal{S}} c_{s,1,a(n)} \right] h_n \\
+          + \sum_{s \in \mathcal{S}} E_{s,n}\, P_{s,n}\, h_n
     \quad \forall\, n \in \mathcal{N}
 \end{multline}
 onde $R_n^{\text{leg}}$ é o resultado financeiro determinístico da carteira legada no mês:
 \begin{equation}
-    R_n^{\text{leg}} = \sum_{s \in \mathcal{S}} \left(V_{s,n}^{0S} K_{s,n}^{0S} - V_{s,n}^{0B} K_{s,n}^{0B}\right) \frac{h_n}{E_{\text{scale}}}
+    R_n^{\text{leg}} = \sum_{s \in \mathcal{S}} \left(V_{s,n}^{0S} K_{s,n}^{0S} - V_{s,n}^{0B} K_{s,n}^{0B}\right) h_n
 \end{equation}
 
 \paragraph{Restrições de Crédito e Risco}
@@ -149,16 +148,51 @@ A diretriz ótima é obtida maximizando uma soma ponderada (regulada pelo fator 
 
 A formulação multiestágio é estruturada sob a abstração de um \textit{Policy Graph} (Grafo de Políticas), conforme proposto por Dowson e Kapelevich. Definimos o grafo direcionado $\mathcal{G} = (\mathcal{V}, \mathcal{E})$, onde a dinâmica temporal e o processo estocástico são representados pela topologia da rede.
 
-Para este modelo de comercialização de energia, adota-se uma topologia de Grafo Linear, refletindo a progressão sequencial e determinística dos meses do horizonte de planejamento:
+Para este modelo de comercialização de energia, adota-se uma topologia de \textbf{Grafo Hazard}, que separa explicitamente o momento de decisão do momento de liquidação dentro de cada mês. Cada mês $t \in \{1, \dots, T\}$ é representado por dois tipos de nós:
+
 \begin{itemize}
-    \item \textbf{Vértices (Estágios):} O conjunto de nós $\mathcal{V} = \{1, 2, \dots, T\}$ representa cada mês do horizonte de simulação.
-    \item \textbf{Arestas (Transições):} O conjunto de arestas direcionadas $\mathcal{E} = \{(t, t+1) \mid t = 1, \dots, T-1\}$ representa a passagem irreversível do tempo.
-    \item \textbf{Dinâmica de Transição:} A probabilidade de transição entre nós é determinística. Estar no nó $t$ implica, com probabilidade $1$, a transição para o nó $t+1$.
+    \item \textbf{Nó de Decisão} $(t, 0)$: o agente observa o estado herdado do mês anterior e toma a decisão de \textit{trading} $(q^B, q^S)$ \emph{antes} de conhecer o cenário do mês. Há exatamente um nó de decisão por mês.
+    \item \textbf{Nó de Liquidação} $(t, c)$: o cenário $c \in \mathcal{C}_t$ se materializa, o fluxo de caixa é calculado e o estado é atualizado. Há $|\mathcal{C}_t|$ nós de liquidação por mês, um por cenário.
 \end{itemize}
 
-Nesta arquitetura, a incerteza do problema não governa a transição entre os nós da rede, mas atua como uma variável aleatória $\omega_t \in \Omega_t$ (composta pelas realizações de Geração e PLD) revelada localmente no nó $t$, sob o paradigma \textit{Decision-Hazard}. O agente decisor observa o estado transferido pelo nó $t-1$, toma a decisão de \textit{trading} e, em seguida, o cenário $\omega_t$ se materializa, definindo o fluxo de caixa local e o estado resultante que será transmitido ao nó $t+1$.
+O conjunto de vértices e arestas é:
+\begin{align}
+    \mathcal{V} &= \{(0,0)\} \cup \{(t, 0) \mid t = 1,\dots,T\} \cup \{(t, c) \mid t = 1,\dots,T,\ c \in \mathcal{C}_t\} \\
+    \mathcal{E} &= \{(0,0) \to (1,0)\}
+        \cup \left\{(t,0) \to (t,c) \;\middle|\; p = \frac{1}{|\mathcal{C}_t|}\right\}
+        \cup \{(t,c) \to (t+1,0) \mid t < T\}
+\end{align}
 
-\subsection{Recurso Completo Relativo e a Variável de Folga $\sigma_t$}
+As transições $(t,0) \to (t,c)$ ocorrem com probabilidade uniforme $1/|\mathcal{C}_t|$; todas as demais transições são determinísticas (probabilidade 1). Esta arquitetura implementa o paradigma \textbf{Hazard-Decision}: a decisão é tomada no nó $(t,0)$ sem conhecimento do cenário, e a incerteza $\omega_t = (P_{s,t}, G_{s,t})$ é revelada apenas no nó de liquidação $(t,c)$.
+
+\paragraph{Subproblema do nó de decisão $(t, 0)$.}
+Recebe o estado $(x, v, c, q^B_{\text{state}}, q^S_{\text{state}})$ do mês anterior, decide $(q^B, q^S)$ e propaga as decisões como estado para os nós de liquidação. O caixa e os pipelines não se alteram neste nó:
+\begin{align}
+    x_{\text{out}} &= x_{\text{in}} \\
+    v_{s,k,\text{out}} &= v_{s,k,\text{in}} \quad \forall\, s,k \\
+    c_{s,k,\text{out}} &= c_{s,k,\text{in}} \quad \forall\, s,k \\
+    q^B_{i,\text{out}} &= q^B_i \quad \forall\, i \in \mathcal{I}_t \\
+    q^S_{i,\text{out}} &= q^S_i \quad \forall\, i \in \mathcal{I}_t
+\end{align}
+Objetivo do estágio: $f_{(t,0)} = 0$.
+
+\paragraph{Subproblema do nó de liquidação $(t, c)$.}
+Recebe as decisões travadas e o cenário $c$, atualiza pipelines e caixa. A folga $\sigma_{t,c} \ge 0$ garante recurso completo relativo (ver Seção~\ref{sec:recourse}):
+\begin{equation}
+    x_{\text{out}} - x_{\text{in}} = \Delta x_{t,c} + \sigma_{t,c}
+\end{equation}
+onde $\Delta x_{t,c}$ é o fluxo de caixa do mês $t$ no cenário $c$ (equação de transição completa da Seção anterior). Objetivo do estágio:
+\begin{equation}
+    f_{(t,c)} = (x_{\text{out}} - x_{\text{in}}) - M\,\sigma_{t,c}
+    \label{eq:obj_sddp}
+\end{equation}
+Como $f_{(t,0)} = 0$ para todos os nós de decisão, a soma dos objetivos ao longo de um caminho telescopa para o saldo final acumulado menos as penalidades de folga:
+\begin{equation}
+    \sum_{t=1}^{T} f_{(t,c_t)} = x_T - x_0 - M \sum_{t=1}^{T} \sigma_{t,c_t}
+\end{equation}
+
+\subsection{Recurso Completo Relativo e a Variável de Folga $\sigma_{t,c}$}
+\label{sec:recourse}
 
 \paragraph{Definição formal.}
 Um problema de programação estocástica multiestágio satisfaz a propriedade de \textbf{recurso completo relativo} (\textit{relatively complete recourse}) se, para todo estado $x_t$ atingível a partir do estado inicial e para toda realização $\omega_t \in \Omega_t$, o subproblema do estágio $t$ admite solução viável. Formalmente, seja $\mathcal{X}_t$ o conjunto de estados atingíveis no estágio $t$; exige-se que
@@ -171,32 +205,9 @@ onde $\mathcal{F}_t(x_t, \omega_t)$ denota o conjunto viável do subproblema con
 No Equivalente Determinístico, a restrição de crédito~\eqref{eq:credito} participa de um único programa linear de grande porte que engloba todos os nós da árvore simultaneamente. O solver pode, portanto, ajustar as decisões de \textit{trading} em estágios anteriores de modo a prevenir qualquer violação futura. A variável $x_n$ é declarada livre ($x_n \in \mathbb{R}$) e a restrição $x_n \ge L^{\text{cred}}$ é uma desigualdade global do LP, não um limite rígido sobre uma variável de estado isolada. A viabilidade do DEQ é, assim, uma propriedade emergente da otimização conjunta sobre toda a árvore.
 
 \paragraph{Por que o SDDP requer a folga.}
-No algoritmo SDDP, cada subproblema do estágio $t$ é resolvido de forma independente, com o estado de entrada $x_t$ fixado pelo passo \textit{forward}. A equação de transição de caixa
-\begin{equation}
-    x_{t+1} = x_t + R_t^{\text{leg}} + \left[\,\cdot\,\right]\frac{h_t}{E_{\text{scale}}} + \sum_{s \in \mathcal{S}} E_{s,t}\,P_{s,t}\,\frac{h_t}{E_{\text{scale}}}
-\end{equation}
-contém o termo estocástico $P_{s,t}(\omega_t)$ e $G_{s,t}(\omega_t)$, que não são controláveis pelas decisões $q^B, q^S$ de forma irrestrita (ambas são limitadas superiormente). Para uma realização adversa $\omega_t$, pode ocorrer que nenhuma escolha admissível de $(q^B, q^S)$ satisfaça simultaneamente a igualdade de transição e o limite inferior do estado $x_{t+1} \ge L^{\text{cred}}$, tornando o subproblema inviável e interrompendo o algoritmo.
-
-\paragraph{Formulação com folga (implementação SDDP).}
-Para garantir recurso completo relativo, introduz-se a variável de folga $\sigma_t \ge 0$, interpretada economicamente como uma linha de crédito emergencial acionada apenas quando os fluxos de caixa realizados são insuficientes para manter o saldo acima do limite corporativo. A equação de transição de caixa passa a ser:
-\begin{equation}
-    x_{t+1} = x_t + R_t^{\text{leg}}
-              + \left[ \sum_{i \in \mathcal{I}_t} \left(q_{i,t}^S K_i^S - q_{i,t}^B K_i^B\right) + \sum_{s \in \mathcal{S}} c_{s,1,t} \right] \frac{h_t}{E_{\text{scale}}}
-              + \sum_{s \in \mathcal{S}} E_{s,t}\, P_{s,t} \frac{h_t}{E_{\text{scale}}}
-              + \sigma_t
-    \label{eq:transicao_sddp}
-\end{equation}
-com $\sigma_t \ge 0$ e sem limite inferior rígido sobre o estado $x_{t+1}$. A função objetivo do estágio $t$ é penalizada pelo uso da folga com coeficiente $M \gg 1$:
-\begin{equation}
-    f_t =
-    \begin{cases}
-        x_{T+1} - M\,\sigma_T & \text{se } t = T \\
-        -M\,\sigma_t           & \text{se } t < T
-    \end{cases}
-    \label{eq:obj_sddp}
-\end{equation}
+No algoritmo SDDP, cada subproblema do nó de liquidação $(t,c)$ é resolvido de forma independente, com o estado de entrada $x_t$ fixado pelo passo \textit{forward}. Para uma realização adversa $\omega_t$, pode ocorrer que nenhuma escolha admissível de $(q^B, q^S)$ — já travada no nó de decisão anterior — satisfaça a restrição de crédito $x_{t+1} \ge L^{\text{cred}}$, tornando o subproblema inviável. A folga $\sigma_{t,c} \ge 0$ relaxa essa restrição, garantindo viabilidade para qualquer estado de entrada.
 
 \paragraph{Consistência entre DEQ e SDDP.}
-Seja $x^*$ a solução ótima do DEQ, com $x_n^* \ge L^{\text{cred}}$ para todo $n \in \mathcal{N}$. Nessa solução, $\sigma_t = 0$ para todo $t$, pois a restrição de crédito nunca é violada. Portanto, a política ótima do SDDP com penalidade $M$ suficientemente grande coincide com a política ótima do DEQ: o valor ótimo convergido pelo SDDP é idêntico ao valor ótimo do DEQ, e a folga $\sigma_t$ permanece nula ao longo de toda trajetória ótima. A adição de $\sigma_t$ é, assim, uma modificação de implementação — necessária para garantir a viabilidade dos subproblemas durante o treinamento — sem alterar o modelo matemático formal nem o valor da solução ótima.
+Seja $x^*$ a solução ótima do DEQ, com $x_n^* \ge L^{\text{cred}}$ para todo $n \in \mathcal{N}$. Nessa solução, $\sigma_{t,c} = 0$ para todo $(t,c)$, pois a restrição de crédito nunca é violada. Portanto, a política ótima do SDDP com penalidade $M$ suficientemente grande coincide com a política ótima do DEQ: o valor ótimo convergido pelo SDDP é idêntico ao valor ótimo do DEQ, e a folga $\sigma_{t,c}$ permanece nula ao longo de toda trajetória ótima.
 
 \end{document}

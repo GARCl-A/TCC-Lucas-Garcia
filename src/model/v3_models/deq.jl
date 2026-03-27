@@ -34,14 +34,14 @@ function load_deq_config()
 
     return DEQConfig(
         data_dir,
-        0.95,    # alpha CVaR
-        0.05,    # lambda (peso do risco)
+        0.95,    # alpha CVaR (5% piores cenários)
+        0.05,    # lambda (peso do CVaR terminal no objetivo)
         y_meses,
         x_cenarios,
         42,      # seed
         0.0,     # caixa inicial (R$)
-        -1e8,    # limite de crédito (-100 Mi em R$); dividido por escala = -0.1 internamente
-        1e9      # escala: valores internos em R$/1e9
+        -1e8,    # limite de crédito (-100 Mi em R$)
+        1.0      # escala: sem conversão, valores em R$
     )
 end
 
@@ -212,8 +212,8 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     nos    = cenarios.nos
     folhas = cenarios.folhas
     subs   = mercado.submercados
-    ESCALA = config.escala
-    L_cred = config.limite_credito / ESCALA  # limite em unidades internas
+    ESCALA = config.escala  # 1.0 — valores em R$ crus
+    L_cred = config.limite_credito  # -1e8 R$
 
     model = Model(HiGHS.Optimizer)
     set_silent(model)
@@ -366,7 +366,7 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     @expression(model, cvar_saldo,
         VaR - (1 / (1 - config.alpha)) * sum(cenarios.prob_no[n] * desvio_cvar[n] for n in folhas))
 
-    # Objetivo conforme .tex: max E[x] + λ·CVaR
+    # Objetivo: risk-neutral (lambda=0) => só esperança; com risco => + lambda*CVaR
     @objective(model, Max, saldo_esperado + config.lambda * cvar_saldo)
 
     println("Otimizando...")
@@ -377,9 +377,9 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     status = JuMP.termination_status(model)
     if status == MOI.OPTIMAL
         println("  Status: OTIMO ($(round(tempo_solver, digits=1))s)")
-        println("  Saldo Esperado : R\$ $(round(value(saldo_esperado) * ESCALA / 1e6, digits=3)) Mi")
-        println("  CVaR ($(round((1-config.alpha)*100, digits=0))%) : R\$ $(round(value(cvar_saldo) * ESCALA / 1e6, digits=3)) Mi")
-        println("  VaR            : R\$ $(round(value(VaR) * ESCALA / 1e6, digits=3)) Mi")
+        println("  Saldo Esperado : R\$ $(round(value(saldo_esperado) / 1e6, digits=3)) Mi")
+        println("  CVaR ($(round((1-config.alpha)*100, digits=0))%) : R\$ $(round(value(cvar_saldo) / 1e6, digits=3)) Mi")
+        println("  VaR            : R\$ $(round(value(VaR) / 1e6, digits=3)) Mi")
 
         # Decisões do mês 1 (primeiro filho do raiz virtual)
         no_mes1 = filhos_de[1][1]
@@ -398,7 +398,7 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
             isnothing(cenarios.mes_do_no[n]) && continue
             mes = cenarios.mes_do_no[n]
             trades_no = [t for t in 1:NT if trades.data[t] == mes]
-            saldo_mi  = value(saldo_no[n]) * ESCALA / 1e6
+            saldo_mi  = value(saldo_no[n]) / 1e6
             for t in trades_no
                 push!(rows, (
                     mes        = mes,
@@ -438,6 +438,10 @@ function main()
 
     println("-"^40)
     return model, status
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
 end
 
 main()
