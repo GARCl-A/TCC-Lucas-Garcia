@@ -59,7 +59,6 @@ function build_sddp_model(config::DEQConfig, data::MarketData, mercado::DadosMer
     # Reescala interna igual ao DEQ: sem conversão, valores em R$ crus
     ESCALA = config.escala  # 1.0
     L_cred = config.limite_credito  # -1e8 R$
-    M_penalty = 1e9  # penalidade alta = crédito quasi-hard (teste risk-neutral)
 
     trades = filter(r -> r.data in Set(mercado.meses), data.trades)
     NT = nrow(trades)
@@ -112,8 +111,6 @@ function build_sddp_model(config::DEQConfig, data::MarketData, mercado::DadosMer
             SDDP.@stageobjective(sp, 0.0)
             return
         end
-
-        @variable(sp, slack_credito >= 0)
 
         for i in 1:NT
             @constraint(sp, qb_state[i].out == 0.0)
@@ -173,10 +170,9 @@ function build_sddp_model(config::DEQConfig, data::MarketData, mercado::DadosMer
         end
 
         @constraint(sp, caixa.out - caixa.in == cash_expr)
-        @constraint(sp, caixa.out + slack_credito >= L_cred)
+        @constraint(sp, caixa.out >= L_cred)
 
-        # Soma dos ganhos mensais de caixa (telescopa para saldo final, pois odd stages têm objetivo zero).
-        SDDP.@stageobjective(sp, (caixa.out - caixa.in) - M_penalty * slack_credito)
+        SDDP.@stageobjective(sp, caixa.out - caixa.in)
     end
 
     return model, trades, ESCALA
@@ -195,34 +191,13 @@ function main_sddp()
 
     model, trades, ESCALA = build_sddp_model(config, data, mercado, max_d)
 
-    println("\nIniciando treinamento SDDP (CVaR terminal)...")
-    # CVaR terminal: Expectation em todos os nos exceto o ultimo estagio de liquidacao,
-    # onde aplica EAVaR(lambda, alpha) — equivalente ao CVaR terminal do DEQ.
-    # Os nos do grafo sao (m, 0) para decisao e (m, c) para liquidacao.
-    # O ultimo estagio de liquidacao e (num_meses, c) para cada cenario c.
-    scenario_ids_last = sort(unique(Int.(filter(r -> r.data == mercado.meses[end], data.cenarios).cenario)))
-    last_nodes = Set([(config.num_meses, c) for c in scenario_ids_last])
-    risk_dict = Dict{Tuple{Int,Int}, SDDP.AbstractRiskMeasure}()
-    for m in 1:config.num_meses
-        risk_dict[(m, 0)] = SDDP.Expectation()
-        for c in sort(unique(Int.(filter(r -> r.data == mercado.meses[m], data.cenarios).cenario)))
-            if (m, c) in last_nodes
-                # Ultimo estagio: aplica CVaR terminal, equivalente ao DEQ
-                risk_dict[(m, c)] = SDDP.EAVaR(
-                    lambda = config.lambda / (1.0 + config.lambda),
-                    beta   = config.alpha,
-                )
-            else
-                risk_dict[(m, c)] = SDDP.Expectation()
-            end
-        end
-    end
+    println("\nIniciando treinamento SDDP (neutro ao risco)...")
     SDDP.train(
         model,
         iteration_limit = 2000,
         stopping_rules = [SDDP.BoundStalling(100, 1e-6)],
         print_level = 1,
-        risk_measure = risk_dict,
+        risk_measure = SDDP.Expectation(),
     )
 
     bound = SDDP.calculate_bound(model)

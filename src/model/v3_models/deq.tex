@@ -40,9 +40,6 @@ Para a implementação do Equivalente Determinístico (DEQ) em formato de árvor
     \item $K_i^B, K_i^S$: Preços fixos de compra e venda do \textit{trade} $i$ (R\$/MWh).
     \item $d_i$: Duração em meses do \textit{trade} $i$.
     \item $s_i$: Submercado de liquidação do \textit{trade} $i$.
-    \item $\lambda$: Fator de aversão ao risco.
-    \item $\alpha$: Nível de confiança do CVaR.
-    \item $M$: Penalidade sobre a folga de crédito ($M \gg 1$).
 \end{itemize}
 
 \section{Variáveis de Decisão e Estado}
@@ -51,8 +48,6 @@ Para a implementação do Equivalente Determinístico (DEQ) em formato de árvor
     \item $v_{s,k,n} \in \mathbb{R}$: \textit{Pipeline} de volume físico do submercado $s$, na defasagem $k$, nó $n$ (MWm).
     \item $c_{s,k,n} \in \mathbb{R}$: \textit{Pipeline} de exposição financeira do submercado $s$, na defasagem $k$, nó $n$ (R\$/h).
     \item $x_n \in \mathbb{R}$: Saldo de caixa financeiro acumulado no nó $n$ (R\$).
-    \item $\mathrm{VaR} \in \mathbb{R}$: \textit{Value-at-Risk} no horizonte final (R\$).
-    \item $\eta_n \ge 0$: Variável de desvio de perda no nó folha $n$ para cálculo do CVaR (R\$).
 \end{itemize}
 
 \section{Restrições do Modelo}
@@ -122,23 +117,18 @@ onde $R_n^{\text{leg}}$ é o resultado financeiro determinístico da carteira le
     R_n^{\text{leg}} = \sum_{s \in \mathcal{S}} \left(V_{s,n}^{0S} K_{s,n}^{0S} - V_{s,n}^{0B} K_{s,n}^{0B}\right) h_n
 \end{equation}
 
-\paragraph{Restrições de Crédito e Risco}
-O saldo não pode violar a margem mínima de crédito estabelecida corporativamente, e o desvio de CVaR é contabilizado exclusivamente sobre os estados terminais:
-\begin{align}
-    x_n     &\ge L^{\text{cred}}          \quad \forall\, n \in \mathcal{N} \label{eq:credito} \\
-    \eta_n  &\ge \mathrm{VaR} - x_n       \quad \forall\, n \in \mathcal{L}
-\end{align}
+\paragraph{Restrição de Crédito}
+O saldo não pode violar a margem mínima de crédito estabelecida corporativamente em nenhum nó da árvore:
+\begin{equation}
+    x_n \ge L^{\text{cred}} \quad \forall\, n \in \mathcal{N} \label{eq:credito}
+\end{equation}
 
 \section{Função Objetivo}
 
-A diretriz ótima é obtida maximizando uma soma ponderada (regulada pelo fator de aversão ao risco $\lambda$) entre a riqueza final esperada e o risco de cauda (CVaR), avaliada apenas sobre os nós folha:
+A diretriz ótima é obtida maximizando a esperança matemática do saldo final, avaliada sobre os nós folha:
 \begin{equation}
-    \max \quad \mathbb{E}[x] + \lambda \cdot \mathrm{CVaR}
+    \max \quad \mathbb{E}[x] = \sum_{n \in \mathcal{L}} \pi_n\, x_n
 \end{equation}
-\begin{align}
-    \mathbb{E}[x]   &= \sum_{n \in \mathcal{L}} \pi_n\, x_n \\
-    \mathrm{CVaR}   &= \mathrm{VaR} - \frac{1}{1 - \alpha} \sum_{n \in \mathcal{L}} \pi_n\, \eta_n
-\end{align}
 
 % ==============================================================
 \section{Implementação via SDDP e Recurso Completo Relativo}
@@ -177,37 +167,22 @@ Recebe o estado $(x, v, c, q^B_{\text{state}}, q^S_{\text{state}})$ do mês ante
 Objetivo do estágio: $f_{(t,0)} = 0$.
 
 \paragraph{Subproblema do nó de liquidação $(t, c)$.}
-Recebe as decisões travadas e o cenário $c$, atualiza pipelines e caixa. A folga $\sigma_{t,c} \ge 0$ garante recurso completo relativo (ver Seção~\ref{sec:recourse}):
+Recebe as decisões travadas e o cenário $c$, atualiza pipelines e caixa. A restrição de crédito é imposta de forma rígida:
 \begin{equation}
-    x_{\text{out}} - x_{\text{in}} = \Delta x_{t,c} + \sigma_{t,c}
+    x_{\text{out}} \ge L^{\text{cred}}
 \end{equation}
 onde $\Delta x_{t,c}$ é o fluxo de caixa do mês $t$ no cenário $c$ (equação de transição completa da Seção anterior). Objetivo do estágio:
 \begin{equation}
-    f_{(t,c)} = (x_{\text{out}} - x_{\text{in}}) - M\,\sigma_{t,c}
+    f_{(t,c)} = x_{\text{out}} - x_{\text{in}}
     \label{eq:obj_sddp}
 \end{equation}
-Como $f_{(t,0)} = 0$ para todos os nós de decisão, a soma dos objetivos ao longo de um caminho telescopa para o saldo final acumulado menos as penalidades de folga:
+Como $f_{(t,0)} = 0$ para todos os nós de decisão, a soma dos objetivos ao longo de um caminho telescopa para o saldo final acumulado:
 \begin{equation}
-    \sum_{t=1}^{T} f_{(t,c_t)} = x_T - x_0 - M \sum_{t=1}^{T} \sigma_{t,c_t}
+    \sum_{t=1}^{T} f_{(t,c_t)} = x_T - x_0
 \end{equation}
 
-\subsection{Recurso Completo Relativo e a Variável de Folga $\sigma_{t,c}$}
-\label{sec:recourse}
+\subsection{Recurso Completo Relativo}
 
-\paragraph{Definição formal.}
-Um problema de programação estocástica multiestágio satisfaz a propriedade de \textbf{recurso completo relativo} (\textit{relatively complete recourse}) se, para todo estado $x_t$ atingível a partir do estado inicial e para toda realização $\omega_t \in \Omega_t$, o subproblema do estágio $t$ admite solução viável. Formalmente, seja $\mathcal{X}_t$ o conjunto de estados atingíveis no estágio $t$; exige-se que
-\begin{equation}
-    \forall\, x_t \in \mathcal{X}_t,\quad \forall\, \omega_t \in \Omega_t : \quad \mathcal{F}_t(x_t, \omega_t) \neq \emptyset,
-\end{equation}
-onde $\mathcal{F}_t(x_t, \omega_t)$ denota o conjunto viável do subproblema condicionado ao estado $x_t$ e à realização $\omega_t$.
-
-\paragraph{Por que o DEQ não requer modificação.}
-No Equivalente Determinístico, a restrição de crédito~\eqref{eq:credito} participa de um único programa linear de grande porte que engloba todos os nós da árvore simultaneamente. O solver pode, portanto, ajustar as decisões de \textit{trading} em estágios anteriores de modo a prevenir qualquer violação futura. A variável $x_n$ é declarada livre ($x_n \in \mathbb{R}$) e a restrição $x_n \ge L^{\text{cred}}$ é uma desigualdade global do LP, não um limite rígido sobre uma variável de estado isolada. A viabilidade do DEQ é, assim, uma propriedade emergente da otimização conjunta sobre toda a árvore.
-
-\paragraph{Por que o SDDP requer a folga.}
-No algoritmo SDDP, cada subproblema do nó de liquidação $(t,c)$ é resolvido de forma independente, com o estado de entrada $x_t$ fixado pelo passo \textit{forward}. Para uma realização adversa $\omega_t$, pode ocorrer que nenhuma escolha admissível de $(q^B, q^S)$ — já travada no nó de decisão anterior — satisfaça a restrição de crédito $x_{t+1} \ge L^{\text{cred}}$, tornando o subproblema inviável. A folga $\sigma_{t,c} \ge 0$ relaxa essa restrição, garantindo viabilidade para qualquer estado de entrada.
-
-\paragraph{Consistência entre DEQ e SDDP.}
-Seja $x^*$ a solução ótima do DEQ, com $x_n^* \ge L^{\text{cred}}$ para todo $n \in \mathcal{N}$. Nessa solução, $\sigma_{t,c} = 0$ para todo $(t,c)$, pois a restrição de crédito nunca é violada. Portanto, a política ótima do SDDP com penalidade $M$ suficientemente grande coincide com a política ótima do DEQ: o valor ótimo convergido pelo SDDP é idêntico ao valor ótimo do DEQ, e a folga $\sigma_{t,c}$ permanece nula ao longo de toda trajetória ótima.
+A restrição de crédito rígida $x_{\text{out}} \ge L^{\text{cred}}$ é imposta diretamente em cada subproblema de liquidação. A viabilidade é garantida pela escolha de decisões de \textit{trading} nos nós de decisão anteriores que mantenham o caixa acima do limite em todos os cenários possíveis. Caso o problema se torne inviável para algum estado de entrada, isso indica que a política corrente é inadmissível e o algoritmo SDDP deve gerar cortes adicionais para restringir o espaço de estados atingíveis.
 
 \end{document}

@@ -4,8 +4,6 @@ using CSV, DataFrames, Dates, JuMP, HiGHS, Statistics, Printf, Random
 
 struct DEQConfig
     data_dir::String
-    alpha::Float64
-    lambda::Float64
     num_meses::Int
     num_ramos::Int
     seed::Int
@@ -34,8 +32,6 @@ function load_deq_config()
 
     return DEQConfig(
         data_dir,
-        0.95,    # alpha CVaR (5% piores cenários)
-        0.05,    # lambda (peso do CVaR terminal no objetivo)
         y_meses,
         x_cenarios,
         42,      # seed
@@ -235,9 +231,6 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     @variable(model, saldo_no[n=nos])
     @variable(model, posicao_futura_volume[sub=subs, k=1:max_d, n=nos])
     @variable(model, receita_futura[sub=subs, k=1:max_d, n=nos])
-    @variable(model, VaR)
-    @variable(model, desvio_cvar[n=folhas] >= 0)
-
     total_nos = length(nos)
     t0_constraints = time()
 
@@ -362,12 +355,7 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     println()
 
     @expression(model, saldo_esperado, sum(cenarios.prob_no[n] * saldo_no[n] for n in folhas))
-    @constraint(model, restricao_cvar[n=folhas], desvio_cvar[n] >= VaR - saldo_no[n])
-    @expression(model, cvar_saldo,
-        VaR - (1 / (1 - config.alpha)) * sum(cenarios.prob_no[n] * desvio_cvar[n] for n in folhas))
-
-    # Objetivo: risk-neutral (lambda=0) => só esperança; com risco => + lambda*CVaR
-    @objective(model, Max, saldo_esperado + config.lambda * cvar_saldo)
+    @objective(model, Max, saldo_esperado)
 
     println("Otimizando...")
     t0_solver = time()
@@ -378,8 +366,6 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     if status == MOI.OPTIMAL
         println("  Status: OTIMO ($(round(tempo_solver, digits=1))s)")
         println("  Saldo Esperado : R\$ $(round(value(saldo_esperado) / 1e6, digits=3)) Mi")
-        println("  CVaR ($(round((1-config.alpha)*100, digits=0))%) : R\$ $(round(value(cvar_saldo) / 1e6, digits=3)) Mi")
-        println("  VaR            : R\$ $(round(value(VaR) / 1e6, digits=3)) Mi")
 
         # Decisões do mês 1 (primeiro filho do raiz virtual)
         no_mes1 = filhos_de[1][1]
@@ -428,7 +414,7 @@ function main()
     println("-"^40)
 
     config   = load_deq_config()
-    println("  alpha=$(config.alpha)  lambda=$(config.lambda)  meses=$(config.num_meses)  ramos=$(config.num_ramos)  seed=$(config.seed)")
+    println("  meses=$(config.num_meses)  ramos=$(config.num_ramos)  seed=$(config.seed)")
 
     data     = load_market_data(config)
     cenarios = build_scenario_tree(data, config)
