@@ -212,6 +212,7 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     L_cred = config.limite_credito  # -1e8 R$
 
     model = Model(HiGHS.Optimizer)
+    set_attribute(model, "time_limit", 300.0) # Limita o HiGHS a 5 minutos
     set_silent(model)
 
     @variable(model, volume_compra_trade[t=1:NT, n=nos] >= 0)
@@ -429,5 +430,3 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     main()
 end
-
-main()
