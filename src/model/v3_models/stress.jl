@@ -24,8 +24,7 @@ function run_stress_test()
             config_teste = DEQConfig(
                 config_base.data_dir, T, R, 42, 0.0, -100.0, 1.0
             )
-
-try
+    try
                 t0 = time()
                 cenarios = build_scenario_tree(data_bruta, config_teste)
                 mercado  = preprocess_market(data_bruta, config_teste)

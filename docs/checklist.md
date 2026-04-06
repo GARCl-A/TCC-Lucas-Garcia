@@ -111,5 +111,6 @@ Ajustes finos da função objetivo.
 - [X] Se certificar de que o sddp_multiestagio e o det_eq estão corretos. !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 - [X] Escrever modelagem do SDDP (policy graph)
 - [X] Escrever modelagem do policy_graph
-- [] Gerador de PLD
-- [] Instalar Cplex -> pra benders
+- [X] Gerador de PLD
+- [] Testar os limites do DEQ
+- [] Comparar o desempenho do DEQ com SDDP pro que o DEQ consegue resolver
