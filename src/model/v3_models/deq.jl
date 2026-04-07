@@ -68,11 +68,18 @@ struct ArvoreCenarios
     producao_no::Dict{Tuple{Int,String},Float64}
 end
 
+const MAX_NOS = 150_000
+
 function build_scenario_tree(data::MarketData, config::DEQConfig)::ArvoreCenarios
     Random.seed!(config.seed)
 
     T = min(config.num_meses, length(sort(unique(data.cenarios.data))))
     R = min(config.num_ramos, maximum(data.cenarios.cenario))
+
+    total_nos_previsto = 1 + sum(R^t for t in 1:T)
+    if total_nos_previsto > MAX_NOS
+        error("MAX_NODES_EXCEEDED: T=$T, R=$R → $total_nos_previsto nós (limite: $MAX_NOS)")
+    end
 
     todos_meses  = sort(unique(data.cenarios.data))[1:T]
     submercados  = String.(unique(data.cenarios.submercado))
@@ -201,18 +208,17 @@ end
 
 # --- Modelo DEQ Multiestágio ---
 
-function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios, mercado::DadosMercado)
-    println("Construindo modelo DEQ...")
+function build_deq_model(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios, mercado::DadosMercado)
     trades = filter(r -> r.data in Set(mercado.meses), data.trades)
     NT     = nrow(trades)
     nos    = cenarios.nos
     folhas = cenarios.folhas
     subs   = mercado.submercados
-    ESCALA = config.escala  # 1.0 — valores em R$ crus
-    L_cred = config.limite_credito  # -1e8 R$
+    ESCALA = config.escala
+    L_cred = config.limite_credito
 
     model = Model(HiGHS.Optimizer)
-    set_attribute(model, "time_limit", 300.0) # Limita o HiGHS a 5 minutos
+    set_attribute(model, "time_limit", 300.0)
     set_silent(model)
 
     @variable(model, volume_compra_trade[t=1:NT, n=nos] >= 0)
@@ -244,7 +250,6 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
         pai    = cenarios.no_pai[n]
         mes_n  = cenarios.mes_do_no[n]
 
-        # Nó raiz virtual: inicializa estado e avança
         if isnothing(mes_n)
             @constraint(model, saldo_no[n] == config.caixa_inicial / ESCALA)
             for sub in subs, k in 1:max_d
@@ -358,17 +363,20 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
     @expression(model, saldo_esperado, sum(cenarios.prob_no[n] * saldo_no[n] for n in folhas))
     @objective(model, Max, saldo_esperado)
 
-    println("Otimizando...")
-    t0_solver = time()
-    optimize!(model)
-    tempo_solver = time() - t0_solver
+    return model, filhos_de, trades, NT
+end
+
+function extract_deq_results(config::DEQConfig, model, cenarios::ArvoreCenarios, filhos_de, trades, NT)
+    nos    = cenarios.nos
+    saldo_no            = model[:saldo_no]
+    volume_compra_trade = model[:volume_compra_trade]
+    volume_venda_trade  = model[:volume_venda_trade]
+    saldo_esperado      = model[:saldo_esperado]
 
     status = JuMP.termination_status(model)
     if status == MOI.OPTIMAL
-        println("  Status: OTIMO ($(round(tempo_solver, digits=1))s)")
         println("  Saldo Esperado : R\$ $(round(value(saldo_esperado) / 1e6, digits=3)) Mi")
 
-        # Decisões do mês 1 (primeiro filho do raiz virtual)
         no_mes1 = filhos_de[1][1]
         println("\nTrades executados no mês 1 (decisão única, pré-cenário):")
         for t in 1:NT
@@ -400,10 +408,25 @@ function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios
         out_path = joinpath(config.data_dir, "..", "results", "deq_decisoes.csv")
         mkpath(dirname(out_path))
         CSV.write(out_path, DataFrame(rows))
-        println("\n  Decisões exportadas: $out_path")
+        println("  Decisões exportadas: $out_path")
     else
         println("  Status: $status")
     end
+    return status
+end
+
+function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios, mercado::DadosMercado)
+    println("Construindo modelo DEQ...")
+    model, filhos_de, trades, NT = build_deq_model(config, data, cenarios, mercado)
+
+    println("Otimizando...")
+    t0_solver = time()
+    optimize!(model)
+    tempo_solver = time() - t0_solver
+
+    status = JuMP.termination_status(model)
+    println("  Status: $(status == MOI.OPTIMAL ? "OTIMO" : string(status)) ($(round(tempo_solver, digits=1))s)")
+    extract_deq_results(config, model, cenarios, filhos_de, trades, NT)
 
     return model, status
 end

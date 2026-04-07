@@ -93,7 +93,7 @@ def calcular_estatisticas_mensais(df_historico):
 
     # Preencher NaN no desvio padrão com 10% da média
     stats["Desvio_Padrao"] = stats["Desvio_Padrao"].fillna(
-        stats["Media_Historica"] * 0.10
+        stats["Media_Historica"] * config.DESVIO_PADRAO_FALLBACK
     )
 
     print(f"✅ Estatísticas calculadas para {stats['COD_ATIVO'].nunique()} usinas")
@@ -135,7 +135,7 @@ def gerar_cenarios_estocasticos(stats, df_pld):
     total_grupos = len(grupos)
 
     resultados = []
-    np.random.seed(42)
+    np.random.seed(config.RANDOM_SEED)
 
     print(f"📦 Processando {total_grupos} grupos (data x submercado)...")
 

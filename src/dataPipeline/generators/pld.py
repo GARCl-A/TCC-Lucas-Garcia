@@ -1,14 +1,29 @@
+import os
+import importlib.util
 import pandas as pd
 import numpy as np
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+
+spec = importlib.util.spec_from_file_location(
+    "config", os.path.join(os.path.dirname(__file__), "..", "config.py")
+)
+config = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(config)
+
+RAW_PLD_FILE = config.RAW_PLD_FILE
+PROCESSED_DIR = config.PROCESSED_DIR
+NUM_CENARIOS = config.NUM_CENARIOS
+MESES_SIMULACAO = config.MESES_SIMULACAO
+DATA_INICIO_SIMULACAO = config.DATA_INICIO_SIMULACAO
+LIMITES_PLD = config.LIMITES_PLD
 
 
 # ==========================================
 # 1. CARREGAR E PREPARAR DADOS
 # ==========================================
 def pld_gen():
-    df = pd.read_csv("data\\ccee\\PLD_Mensal_2001_2025.csv")
+    df = pd.read_csv(RAW_PLD_FILE)
     submercados = ["SUDESTE", "SUL", "NORDESTE", "NORTE"]
 
     # Limpar formatação
@@ -70,10 +85,9 @@ def pld_gen():
     # ==========================================
     # 3. GERAR CENÁRIOS SINTÉTICOS E ÚNICOS
     # ==========================================
-    num_cenarios = 2000
-    meses_simulacao = 60
-    data_inicio = "2026-01-01"
-    data_base = datetime.strptime(data_inicio, "%Y-%m-%d")
+    num_cenarios = NUM_CENARIOS
+    meses_simulacao = MESES_SIMULACAO
+    data_base = datetime.strptime(DATA_INICIO_SIMULACAO, "%Y-%m-%d")
 
     linhas_finais = []
     map_subs_modelo = {"SUDESTE": "SE", "SUL": "S", "NORDESTE": "NE", "NORTE": "N"}
@@ -111,9 +125,9 @@ def pld_gen():
 
                 # Reverte o Logaritmo (Exponencial) e garante limites regulatórios (ex: teto de R$ 700, piso de R$ 69)
                 pld_real = np.exp(log_pld_simulado)
-                pld_real = np.clip(
-                    pld_real, 69.04, 700.00
-                )  # Limites fictícios aproximados da CCEE
+                ano = data_atual.year
+                pld_min, pld_max = LIMITES_PLD.get(ano, LIMITES_PLD[max(LIMITES_PLD)])
+                pld_real = np.clip(pld_real, pld_min, pld_max)
 
                 linhas_finais.append(
                     {
@@ -126,5 +140,5 @@ def pld_gen():
 
     # Salvar
     df_final = pd.DataFrame(linhas_finais)
-    df_final.to_csv("data\\processed\\cenarios_final.csv", index=False)
+    df_final.to_csv(os.path.join(PROCESSED_DIR, "cenarios_final.csv"), index=False)
     print(f"Gerados {num_cenarios} cenários estocásticos PAR(1) com sucesso!")
