@@ -112,5 +112,5 @@ Ajustes finos da função objetivo.
 - [X] Escrever modelagem do SDDP (policy graph)
 - [X] Escrever modelagem do policy_graph
 - [X] Gerador de PLD
-- [] Testar os limites do DEQ
+- [X] Testar os limites do DEQ
 - [] Comparar o desempenho do DEQ com SDDP pro que o DEQ consegue resolver
