@@ -11,11 +11,11 @@ function rodar_comparacao()
     # Vamos usar apenas 3 meses (T=3) e 2 cenários por nó (R=2) -> 15 Nós.
     config_base = load_deq_config()
     config_toy = DEQConfig(
-        config_base.data_dir, 
-        3,  # T = 3 meses
-        2,  # R = 2 cenários
-        42, # seed idêntica
-        0.0, -1e8, 1.0 # Parâmetros base (R$)
+            config_base.data_dir, 
+            8,  # T = 8 meses
+            4,  # R = 4 cenários
+            42, 
+            0.0, -1e8, 1e6 # Mantendo a escala de milhões!
     )
 
     data = load_market_data(config_toy)
@@ -62,9 +62,9 @@ function rodar_comparacao()
     
     SDDP.train(
         model_sddp,
-        iteration_limit = 100, # Para 15 nós, convergir é garantido aqui
+        iteration_limit = 50, # Suba para 50
         stopping_rules = [SDDP.BoundStalling(20, 1e-4)],
-        print_level = 0, # Silencioso
+        print_level = 0,
         risk_measure = SDDP.Expectation()
     )
 
