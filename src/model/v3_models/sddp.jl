@@ -1,7 +1,7 @@
 using SDDP, JuMP, Statistics, CSV, DataFrames, Dates
 include("deq.jl")
 
-function build_scenario_indexes(data::MarketData, mercado::DadosMercado)
+function build_scenario_indexes(data::MarketData, mercado::DadosMercado, config::DEQConfig)
     sub_por_usina = Dict(r.usina_cod => r.submercado for r in eachrow(data.geracao))
 
     pld_idx = Dict{Tuple{Date, Int, String}, Float64}()
@@ -20,7 +20,7 @@ function build_scenario_indexes(data::MarketData, mercado::DadosMercado)
     for (m_idx, mes) in enumerate(mercado.meses)
         ids = sort(unique(Int.(filter(r -> r.data == mes, data.cenarios).cenario)))
         isempty(ids) && error("Sem cenarios para o mes $(mes).")
-        scenario_ids[m_idx] = ids
+        scenario_ids[m_idx] = ids[1:min(config.num_ramos, length(ids))]
     end
 
     return scenario_ids, pld_idx, ger_idx
@@ -64,15 +64,15 @@ function build_sddp_model(config::DEQConfig, data::MarketData, mercado::DadosMer
     NT = nrow(trades)
     subs = mercado.submercados
 
-    scenario_ids, pld_idx, ger_idx = build_scenario_indexes(data, mercado)
+    scenario_ids, pld_idx, ger_idx = build_scenario_indexes(data, mercado, config)
     graph = build_hazard_graph(config.num_meses, scenario_ids)
 
     model = SDDP.PolicyGraph(
         graph,
         sense = :Max,
-        lower_bound = -1.0e8,
+        lower_bound = -1.0e12/ ESCALA,
         optimizer = HiGHS.Optimizer,
-        upper_bound = 1.0e8,
+        upper_bound = 1.0e12/ ESCALA,
     ) do sp, node
         m_idx, c_id = node
         mes = mercado.meses[m_idx]
@@ -169,10 +169,11 @@ function build_sddp_model(config::DEQConfig, data::MarketData, mercado::DadosMer
             add_to_expression!(cash_expr, coeff_s, qs_state[i].in)
         end
 
+        @variable(sp, deficit_credito >= 0)
         @constraint(sp, caixa.out - caixa.in == cash_expr)
-        @constraint(sp, caixa.out >= L_cred)
+        @constraint(sp, caixa.out + deficit_credito >= L_cred)
 
-        SDDP.@stageobjective(sp, caixa.out - caixa.in)
+        SDDP.@stageobjective(sp, caixa.out - caixa.in - (1e9 / ESCALA) * deficit_credito)
     end
 
     return model, trades, ESCALA
@@ -252,5 +253,3 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     main_sddp()
 end
-
-main_sddp()
