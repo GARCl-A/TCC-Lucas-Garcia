@@ -167,22 +167,33 @@ Recebe o estado $(x, v, c, q^B_{\text{state}}, q^S_{\text{state}})$ do mês ante
 Objetivo do estágio: $f_{(t,0)} = 0$.
 
 \paragraph{Subproblema do nó de liquidação $(t, c)$.}
-Recebe as decisões travadas e o cenário $c$, atualiza pipelines e caixa. A restrição de crédito é imposta de forma rígida:
+Recebe as decisões travadas e o cenário $c$, atualiza pipelines e caixa. A restrição de crédito não é imposta como restrição rígida neste subproblema, mas sim via penalização na função objetivo, conforme detalhado na Seção~\ref{sec:recurso_completo}. O objetivo do estágio é:
 \begin{equation}
-    x_{\text{out}} \ge L^{\text{cred}}
-\end{equation}
-onde $\Delta x_{t,c}$ é o fluxo de caixa do mês $t$ no cenário $c$ (equação de transição completa da Seção anterior). Objetivo do estágio:
-\begin{equation}
-    f_{(t,c)} = x_{\text{out}} - x_{\text{in}}
+    f_{(t,c)} = x_{\text{out}} - x_{\text{in}} - M \cdot \delta_{t,c}
     \label{eq:obj_sddp}
 \end{equation}
-Como $f_{(t,0)} = 0$ para todos os nós de decisão, a soma dos objetivos ao longo de um caminho telescopa para o saldo final acumulado:
+onde $\delta_{t,c} \ge 0$ é a variável de folga de crédito e $M$ é o coeficiente de penalidade (ver Seção~\ref{sec:recurso_completo}).
+Como $f_{(t,0)} = 0$ para todos os nós de decisão, a soma dos objetivos ao longo de um caminho telescopa para o saldo final acumulado (descontada a penalidade total incorrida):
 \begin{equation}
-    \sum_{t=1}^{T} f_{(t,c_t)} = x_T - x_0
+    \sum_{t=1}^{T} f_{(t,c_t)} = x_T - x_0 - M \sum_{t=1}^{T} \delta_{t,c_t}
 \end{equation}
 
-\subsection{Recurso Completo Relativo}
+\subsection{Tratamento da Restrição de Crédito no SDDP: Penalização por Déficit}
+\label{sec:recurso_completo}
 
-A restrição de crédito rígida $x_{\text{out}} \ge L^{\text{cred}}$ é imposta diretamente em cada subproblema de liquidação. A viabilidade é garantida pela escolha de decisões de \textit{trading} nos nós de decisão anteriores que mantenham o caixa acima do limite em todos os cenários possíveis. Caso o problema se torne inviável para algum estado de entrada, isso indica que a política corrente é inadmissível e o algoritmo SDDP deve gerar cortes adicionais para restringir o espaço de estados atingíveis.
+No DEQ, a restrição de crédito é imposta de forma rígida em todos os nós da árvore (equação~\ref{eq:credito}), o que é viável porque o problema inteiro é resolvido de uma só vez e o solver tem visibilidade global sobre todas as restrições simultaneamente.
+
+No SDDP, entretanto, cada subproblema de liquidação $(t, c)$ é resolvido de forma independente, recebendo como entrada o estado $(x_{\text{in}}, v_{\text{in}}, c_{\text{in}}, q^B_{\text{in}}, q^S_{\text{in}})$ propagado pela política corrente. Durante as iterações iniciais do algoritmo, a política ainda não está refinada e pode propagar estados de caixa que, combinados com cenários adversos de PLD, tornariam a restrição $x_{\text{out}} \ge L^{\text{cred}}$ infactível no subproblema corrente — mesmo que existam decisões de \textit{trading} anteriores que evitariam essa situação numa política ótima.
+
+Impor a restrição de crédito como restrição rígida no SDDP causaria infactibilidade nos subproblemas durante o processo de treinamento, interrompendo a geração de cortes de Benders antes da convergência. Para contornar esse problema sem alterar a solução ótima, adota-se a técnica de \textbf{penalização por déficit de crédito}: introduz-se uma variável de folga $\delta_{t,c} \ge 0$ que absorve eventuais violações do limite, e penaliza-se sua ocorrência com um coeficiente $M$ suficientemente grande na função objetivo:
+
+\begin{align}
+    x_{\text{out}} + \delta_{t,c} &\ge L^{\text{cred}} \label{eq:credito_soft} \\
+    \delta_{t,c} &\ge 0
+\end{align}
+
+O coeficiente de penalidade adotado é $M = 10^9$ (R\$/R\$), valor calibrado para ser ordens de grandeza superior ao maior fluxo de caixa mensal esperado no problema. Com isso, qualquer violação do limite de crédito, por menor que seja, implica uma penalidade que domina qualquer ganho de \textit{trading} possível, tornando a solução penalizada estritamente inferior à solução viável. Na prática, após a convergência do SDDP, a política ótima encontrada respeita $x_{\text{out}} \ge L^{\text{cred}}$ em todos os cenários simulados, com $\delta_{t,c} = 0$, sendo portanto equivalente à solução do DEQ com restrição rígida.
+
+Esta abordagem é equivalente ao conceito de \textbf{recurso completo relativo}: o problema sempre possui solução viável (com penalidade), e o algoritmo converge para a política que, ao mesmo tempo, maximiza o saldo esperado e evita violações de crédito.
 
 \end{document}

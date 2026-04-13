@@ -113,4 +113,11 @@ Ajustes finos da função objetivo.
 - [X] Escrever modelagem do policy_graph
 - [X] Gerador de PLD
 - [X] Testar os limites do DEQ
-- [] Comparar o desempenho do DEQ com SDDP pro que o DEQ consegue resolver
+- [X] Comparar o desempenho do DEQ com SDDP pro que o DEQ consegue resolver
+- [] Quebrar em PLD e GERAÇÃO
+- [] aplicar a mesma penalidade do sddp no deq
+- [] hazard decision?????
+- [] analisar os resultados
+- [] adicionar time_limit, buscar resultados não otimos em caso de limite pra comparar com caso ótimo
+- [] timelimit - 1h
+- [] catar artigos da SBPO parecidos com o meu. (PO na energia e otimização com incerteza)
