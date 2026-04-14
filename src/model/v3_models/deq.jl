@@ -32,12 +32,12 @@ function load_deq_config()
 
     return DEQConfig(
         data_dir,
-        y_meses,
-        x_cenarios,
+        6, #y_meses,
+        4, #x_cenarios,
         42,      # seed
         0.0,     # caixa inicial (R$)
         -1e8,    # limite de crédito (-100 Mi em R$)
-        1.0      # escala: sem conversão, valores em R$
+        1e6      # escala: valores em milhões de R$
     )
 end
 

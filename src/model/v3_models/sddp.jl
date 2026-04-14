@@ -195,7 +195,7 @@ function main_sddp()
     println("\nIniciando treinamento SDDP (neutro ao risco)...")
     SDDP.train(
         model,
-        iteration_limit = 2000,
+        iteration_limit = 50,
         stopping_rules = [SDDP.BoundStalling(100, 1e-6)],
         print_level = 1,
         risk_measure = SDDP.Expectation(),
@@ -204,6 +204,8 @@ function main_sddp()
     bound = SDDP.calculate_bound(model)
     println("\nTreinamento concluido!")
     println("   Upper Bound (Z) : R\$ $(round(bound / 1e6, digits = 3)) Mi")
+
+    scenario_ids, pld_idx, ger_idx = build_scenario_indexes(data, mercado, config)
 
     trade_ids = 1:nrow(trades)
     sim_syms = vcat([:caixa],
@@ -225,21 +227,26 @@ function main_sddp()
         end
     end
 
-    rows = NamedTuple{(:simulacao, :estagio, :mes, :ticker, :compra_mwm, :venda_mwm, :saldo_mi),
-                      Tuple{Int, Int, Date, String, Float64, Float64, Float64}}[]
+    rows = NamedTuple{(:simulacao, :estagio, :mes, :cenario, :pld_sub, :geracao_sub, :ticker, :compra_mwm, :venda_mwm, :saldo_mi),
+                      Tuple{Int, Int, Date, Int, Float64, Float64, String, Float64, Float64, Float64}}[]
     for (s_idx, sim) in enumerate(sims)
         for m_idx in 1:config.num_meses
             mes = mercado.meses[m_idx]
-            stage_dec = sim[2 * m_idx - 1]
+            stage_dec    = sim[2 * m_idx - 1]
             stage_settle = sim[2 * m_idx]
-            saldo = stage_settle[:caixa].out / 1e6
+            saldo  = stage_settle[:caixa].out / 1e6
+            c_id   = stage_settle[:node_index][2]  # (m, c_id)
             for i in trade_ids
                 trades.data[i] == mes || continue
                 qb = get(stage_dec, Symbol("qB_", i), nothing)
                 qs = get(stage_dec, Symbol("qS_", i), nothing)
                 qb === nothing && continue
-                push!(rows, (s_idx, m_idx, mes, trades.ticker[i],
-                             round(qb, digits = 4), round(qs, digits = 4), round(saldo, digits = 3)))
+                sub     = trades.submercado[i]
+                pld     = round(get(pld_idx, (mes, c_id, sub), 0.0), digits=2)
+                geracao = round(get(ger_idx, (mes, c_id, sub), 0.0), digits=2)
+                exposicao = round((qb - qs) * pld * horas_mes(mes) / ESCALA, digits=2)
+                push!(rows, (s_idx, m_idx, mes, c_id, pld, geracao,
+                             trades.ticker[i], round(qb, digits=4), round(qs, digits=4), round(saldo, digits=3)))
             end
         end
     end
@@ -253,3 +260,5 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     main_sddp()
 end
+
+main_sddp()
