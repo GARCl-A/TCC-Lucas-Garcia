@@ -236,6 +236,7 @@ function build_deq_model(config::DEQConfig, data::MarketData, cenarios::ArvoreCe
 
     max_d = maximum(trades.duracao_meses)
     @variable(model, saldo_no[n=nos])
+    @variable(model, deficit_credito_no[n=nos] >= 0)
     @variable(model, posicao_futura_volume[sub=subs, k=1:max_d, n=nos])
     @variable(model, receita_futura[sub=subs, k=1:max_d, n=nos])
     total_nos = length(nos)
@@ -350,8 +351,8 @@ function build_deq_model(config::DEQConfig, data::MarketData, cenarios::ArvoreCe
             saldo_no[n] == saldo_pai + R_leg +
                 (receita_novos + receita_herdada) * (h / ESCALA) + exposicao_spot)
 
-        # Restrição de crédito em todos os nós
-        @constraint(model, saldo_no[n] >= L_cred)
+        # Restrição de crédito soft (mesma penalidade do SDDP)
+        @constraint(model, saldo_no[n] + deficit_credito_no[n] >= L_cred)
 
         if idx_n % max(1, div(total_nos, 20)) == 0 || idx_n == total_nos
             print("\r  Constraints: $idx_n/$total_nos ($(round(Int, 100*idx_n/total_nos))%) | $(round(time()-t0_constraints, digits=1))s")
@@ -360,8 +361,10 @@ function build_deq_model(config::DEQConfig, data::MarketData, cenarios::ArvoreCe
     end
     println()
 
+    nos_nao_raiz = filter(n -> !isnothing(cenarios.mes_do_no[n]), nos)
     @expression(model, saldo_esperado, sum(cenarios.prob_no[n] * saldo_no[n] for n in folhas))
-    @objective(model, Max, saldo_esperado)
+    @expression(model, penalidade_total, sum(cenarios.prob_no[n] * deficit_credito_no[n] for n in nos_nao_raiz))
+    @objective(model, Max, saldo_esperado - (1e9 / ESCALA) * penalidade_total)
 
     return model, filhos_de, trades, NT
 end
