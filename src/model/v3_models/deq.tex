@@ -68,7 +68,7 @@ Os volumes negociados estão limitados aos lotes máximos. Para garantir a causa
     q_{i,n}^B = 0,\ q_{i,n}^S &= 0 \quad \forall\, n \in \mathcal{N},\ \forall\, i \notin \mathcal{I}_n
 \end{align}
 
-Adicionalmente, como o Equivalente Determinístico opera sob um paradigma onde a incerteza é revelada nos nós da árvore, impõe-se a \textbf{Restrição de Não-Antecipatividade Estrita}. Esta restrição garante que decisões tomadas em um determinado momento do tempo sejam idênticas para todos os cenários possíveis que compartilham o mesmo histórico até aquele momento (mesmo nó pai), alinhando a modelagem ao comportamento \textit{Hazard-Decision}:
+Adicionalmente, o Equivalente Determinístico é estruturado sob o paradigma \textbf{Decision-Hazard (Decisão-Acaso)}, refletindo a realidade operacional onde o agente define seu portfólio de contratos antes da materialização dos cenários hidrológicos do mês. Para evitar que o otimizador antecipe o futuro, impõe-se a \textbf{Restrição de Não-Antecipatividade Estrita}. Esta restrição garante que decisões tomadas em um determinado momento do tempo sejam idênticas para todos os cenários possíveis que compartilham o mesmo histórico até aquele momento (mesmo nó pai), obrigando o modelo a decidir sob incerteza:
 \begin{align}
     q_{i,m}^B &= q_{i,n}^B \quad \forall\, m, n \in \mathcal{N} \text{ tais que } a(m) = a(n) \\
     q_{i,m}^S &= q_{i,n}^S \quad \forall\, m, n \in \mathcal{N} \text{ tais que } a(m) = a(n)
@@ -153,7 +153,7 @@ O conjunto de vértices e arestas é:
         \cup \{(t,c) \to (t+1,0) \mid t < T\}
 \end{align}
 
-As transições $(t,0) \to (t,c)$ ocorrem com probabilidade uniforme $1/|\mathcal{C}_t|$; todas as demais transições são determinísticas (probabilidade 1). Esta arquitetura implementa o paradigma \textbf{Hazard-Decision}: a decisão é tomada no nó $(t,0)$ sem conhecimento do cenário, e a incerteza $\omega_t = (P_{s,t}, G_{s,t})$ é revelada apenas no nó de liquidação $(t,c)$.
+As transições $(t,0) \to (t,c)$ ocorrem com probabilidade uniforme $1/|\mathcal{C}_t|$; todas as demais transições são determinísticas (probabilidade 1). Esta topologia de grafo bipartido implementa nativamente o paradigma \textbf{Decision-Hazard}: a decisão vinculativa é tomada no nó $(t,0)$ sem conhecimento prévio do cenário climático. A incerteza $\omega_t = (P_{s,t}, G_{s,t})$ se materializa, atuando sobre a decisão já travada, apenas no nó de liquidação $(t,c)$.
 
 \paragraph{Subproblema do nó de decisão $(t, 0)$.}
 Recebe o estado $(x, v, c, q^B_{\text{state}}, q^S_{\text{state}})$ do mês anterior, decide $(q^B, q^S)$ e propaga as decisões como estado para os nós de liquidação. O caixa e os pipelines não se alteram neste nó:

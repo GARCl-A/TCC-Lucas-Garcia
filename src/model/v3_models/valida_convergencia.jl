@@ -12,7 +12,7 @@ function rodar_comparacao()
     config_base = load_deq_config()
     config_toy = DEQConfig(
             config_base.data_dir, 
-            8,  # T = 8 meses
+            6,  # T = 8 meses
             4,  # R = 4 cenários
             42, 
             0.0, -1e8, 1e6 # Mantendo a escala de milhões!

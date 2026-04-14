@@ -114,9 +114,9 @@ Ajustes finos da função objetivo.
 - [X] Gerador de PLD
 - [X] Testar os limites do DEQ
 - [X] Comparar o desempenho do DEQ com SDDP pro que o DEQ consegue resolver
-- [] Quebrar em PLD e GERAÇÃO
-- [] aplicar a mesma penalidade do sddp no deq
-- [] hazard decision?????
+- [?] Quebrar em PLD e GERAÇÃO
+- [X] aplicar a mesma penalidade do sddp no deq
+- [X] hazard decision?????
 - [] analisar os resultados
 - [] adicionar time_limit, buscar resultados não otimos em caso de limite pra comparar com caso ótimo
 - [] timelimit - 1h

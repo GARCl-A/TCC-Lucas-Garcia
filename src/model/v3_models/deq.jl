@@ -390,21 +390,30 @@ function extract_deq_results(config::DEQConfig, model, cenarios::ArvoreCenarios,
             end
         end
 
-        rows = NamedTuple{(:mes, :no, :ticker, :compra_mwm, :venda_mwm, :saldo_mi),
-                          Tuple{Date,Int,String,Float64,Float64,Float64}}[]
+        rows = NamedTuple{(:mes, :no, :no_pai, :pld_sub, :exposicao_sub, :ticker, :compra_mwm, :venda_mwm, :saldo_mi),
+                          Tuple{Date,Int,Int,Float64,Float64,String,Float64,Float64,Float64}}[]
         for n in nos
             isnothing(cenarios.mes_do_no[n]) && continue
-            mes = cenarios.mes_do_no[n]
+            mes       = cenarios.mes_do_no[n]
+            pai       = cenarios.no_pai[n]
             trades_no = [t for t in 1:NT if trades.data[t] == mes]
             saldo_mi  = value(saldo_no[n]) / 1e6
             for t in trades_no
+                sub      = trades.submercado[t]
+                pld      = round(get(cenarios.pld_no, (n, sub), 0.0), digits=2)
+                qb       = value(volume_compra_trade[t, n])
+                qs       = value(volume_venda_trade[t, n])
+                exposicao = round((qb - qs) * pld * horas_mes(mes) / config.escala, digits=2)
                 push!(rows, (
-                    mes        = mes,
-                    no         = n,
-                    ticker     = trades.ticker[t],
-                    compra_mwm = round(value(volume_compra_trade[t, n]), digits=4),
-                    venda_mwm  = round(value(volume_venda_trade[t, n]),  digits=4),
-                    saldo_mi   = round(saldo_mi, digits=3)
+                    mes          = mes,
+                    no           = n,
+                    no_pai       = pai,
+                    pld_sub      = pld,
+                    exposicao_sub = exposicao,
+                    ticker       = trades.ticker[t],
+                    compra_mwm   = round(qb, digits=4),
+                    venda_mwm    = round(qs, digits=4),
+                    saldo_mi     = round(saldo_mi, digits=3)
                 ))
             end
         end
