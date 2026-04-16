@@ -218,8 +218,7 @@ function build_deq_model(config::DEQConfig, data::MarketData, cenarios::ArvoreCe
     L_cred = config.limite_credito
 
     model = Model(HiGHS.Optimizer)
-    set_attribute(model, "time_limit", 300.0)
-    set_silent(model)
+    set_time_limit_sec(model, 3600.0)
 
     @variable(model, volume_compra_trade[t=1:NT, n=nos] >= 0)
     @variable(model, volume_venda_trade[t=1:NT,  n=nos] >= 0)
@@ -429,7 +428,9 @@ end
 
 function solve_deq(config::DEQConfig, data::MarketData, cenarios::ArvoreCenarios, mercado::DadosMercado)
     println("Construindo modelo DEQ...")
+    t0_build = time()
     model, filhos_de, trades, NT = build_deq_model(config, data, cenarios, mercado)
+    println("  Build: $(round(time()-t0_build, digits=1))s")
 
     println("Otimizando...")
     t0_solver = time()
