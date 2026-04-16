@@ -32,8 +32,8 @@ function load_deq_config()
 
     return DEQConfig(
         data_dir,
-        6, #y_meses,
-        4, #x_cenarios,
+        y_meses,
+        x_cenarios,
         42,      # seed
         0.0,     # caixa inicial (R$)
         -1e8,    # limite de crédito (-100 Mi em R$)
@@ -68,7 +68,7 @@ struct ArvoreCenarios
     producao_no::Dict{Tuple{Int,String},Float64}
 end
 
-const MAX_NOS = 150_000
+const MAX_NOS = 70_000
 
 function build_scenario_tree(data::MarketData, config::DEQConfig)::ArvoreCenarios
     Random.seed!(config.seed)
