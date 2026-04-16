@@ -1,66 +1,69 @@
 % --- ARQUIVO: modelagem-matematica.tex ---
-% Este arquivo deve ser incluído no main usando \input{modelagem-matematica.tex}
 
 \section{Modelagem Matemática}
 \label{sec:modelagem}
 
-Para a implementação da gestão de portfólio de contratos, propõe-se inicialmente a formulação do Equivalente Determinístico (DEQ) em formato de árvore de cenários. As variáveis e restrições são indexadas por nós da árvore, preservando a dependência intertemporal e a não-antecipatividade inerentes ao mercado de energia.
+Para a implementação da gestão de portfólio de contratos, propõe-se inicialmente a formulação do Equivalente Determinístico (DEQ). A abstração lógica do modelo estocástico é uma árvore de cenários, que, na prática computacional, é traduzida e resolvida de forma monolítica como uma matriz esparsa de grande porte. A modelagem garante a dependência intertemporal do problema, isto é, o fato de que as posições físicas e financeiras assumidas em um determinado mês afetam o estado e a flexibilidade da carteira nos meses subsequentes.
 
 \subsection{Notação: Conjuntos, Parâmetros e Variáveis}
 
-Seja $\mathcal{N}$ o conjunto de nós da árvore de cenários, onde $a(n)$ denota o nó pai do nó $n$, e $\mathcal{L} \subset \mathcal{N}$ o subconjunto de nós folha. O problema opera sobre um conjunto de submercados $\mathcal{S}$ e um conjunto de \textit{trades} disponíveis $\mathcal{I}$. Para respeitar a causalidade temporal, define-se $\mathcal{I}_n \subseteq \mathcal{I}$ como o subconjunto de contratos cuja data de início coincide estritamente com a ocorrência do nó $n$. O \textit{pipeline} temporal dos contratos é indexado por $k \in \mathcal{K} = \{1, \dots, D_{\max}\}$, onde $D_{\max}$ é a duração máxima em meses.
+Seja $\mathcal{N}$ o conjunto de nós da árvore de cenários, onde $a(n)$ denota o nó pai do nó $n$, e $\mathcal{L} \subset \mathcal{N}$ o subconjunto de nós folha. É crucial notar que, na formulação do DEQ, o índice $n$ do nó encapsula simultaneamente a dimensão temporal (o estágio) e o histórico de cenários percorridos até aquele instante. 
 
-A incerteza hidrológica e de preços, revelada no nó $n$ com probabilidade incondicional $\pi_n$, é caracterizada pelo Preço de Liquidação de Diferenças $P_{s,n}$ (R\$/MWh) e pela geração física consolidada $G_{s,n}$ (MWm) no submercado $s$. O número de horas no mês é dado por $h_n$. A empresa possui um saldo de caixa inicial $C_{\text{inicial}}$ e está sujeita a um limite mínimo de crédito $L^{\text{cred}}$. A carteira legada possui volumes consolidados de compra e venda ($V_{s,n}^{0B}, V_{s,n}^{0S}$) a preços médios ($K_{s,n}^{0B}, K_{s,n}^{0S}$). Cada \textit{trade} $i$ possui limites de lote ($\bar{q}_i^B, \bar{q}_i^S$), preços fixados ($K_i^B, K_i^S$), duração $d_i$ e submercado de liquidação $s_i$.
+O problema opera sobre um conjunto de submercados $\mathcal{S}$ (indexados por $s$) e um conjunto de \textit{trades} (contratos) disponíveis $\mathcal{I}$. Define-se $\mathcal{I}_n \subseteq \mathcal{I}$ como o subconjunto de contratos cuja data de início coincide estritamente com o mês de ocorrência do nó $n$. O \textit{pipeline} temporal dos contratos é indexado pela defasagem $k \in \{1, \dots, D_{\max}\}$, onde $D_{\max}$ é a duração máxima do contrato em meses.
 
-As decisões de alocação em cada nó $n$ consistem nos volumes (MWm) comprados ($q_{i,n}^B \ge 0$) e vendidos ($q_{i,n}^S \ge 0$). O estado do sistema é capturado pelo \textit{pipeline} de volume físico $v_{s,k,n}$ (MWm), pelo \textit{pipeline} de exposição financeira $c_{s,k,n}$ (R\$/h) e pelo saldo de caixa financeiro acumulado $x_n$ (R\$). Uma variável de déficit $\delta_n \ge 0$ é introduzida para garantir viabilidade operacional.
+As incertezas sistêmicas — refletindo a estocasticidade da matriz elétrica (hídrica, eólica, solar) e da demanda —, são reveladas no nó $n$ com probabilidade incondicional $\pi_n$. Elas são parametrizadas pelo Preço de Liquidação de Diferenças, $P_{s,n}$ (R\$/MWh), e pela geração física consolidada, $G_{s,n}$ (MWm), no submercado $s$. O número de horas no mês do nó é $h_n$. A empresa possui saldo de caixa inicial $C_{\text{inicial}}$ e está sujeita a um limite mínimo de crédito $L^{\text{cred}}$. A carteira legada possui volumes ($V_{s,n}^{0B}, V_{s,n}^{0S}$) a preços médios ($K_{s,n}^{0B}, K_{s,n}^{0S}$). Cada novo \textit{trade} $i$ possui limites de lote ($\bar{q}_i^B, \bar{q}_i^S$), preços fixados ($K_i^B, K_i^S$), duração $d_i$ e submercado de liquidação $s_i$.
+
+As decisões em cada nó $n$ consistem nos volumes (MWm) comprados ($q_{i,n}^B \ge 0$) e vendidos ($q_{i,n}^S \ge 0$). O estado da carteira transita através do \textit{pipeline} de volume físico $v_{s,k,n}$ (MWm), do \textit{pipeline} de exposição financeira $c_{s,k,n}$ (R\$/h) e do saldo financeiro acumulado $x_n$ (R\$). Uma variável de déficit $\delta_n \ge 0$ é introduzida para garantir a viabilidade da resolução matriz-solver.
 
 \subsection{Equivalente Determinístico e Paradigma Decision-Hazard}
 
-O modelo é estruturado sob o paradigma \textbf{Decision-Hazard (Decisão-Acaso)}. O agente deve definir seu portfólio antes da materialização do PLD do mês. Para evitar antecipação de informações, impõe-se a restrição de Não-Antecipatividade Estrita, obrigando decisões idênticas para cenários com o mesmo histórico:
+A formulação adota o paradigma \textbf{Decision-Hazard (Decisão-Incerteza)}. O agente deve travar seu portfólio de contratos antes da materialização do PLD e da Geração do mês corrente. Para evitar que o otimizador antecipe informações da matriz estocástica, impõe-se a restrição de Não-Antecipatividade Estrita, obrigando decisões idênticas para todos os nós "irmãos" que compartilham o mesmo nó pai:
 \begin{equation}
     q_{i,m}^B = q_{i,n}^B \quad \text{e} \quad q_{i,m}^S = q_{i,n}^S \quad \forall\, m, n \in \mathcal{N} \mid a(m) = a(n)
 \end{equation}
 
-Os volumes negociados respeitam os limites estabelecidos ($0 \le q_{i,n}^B \le \bar{q}_i^B$) e são estritamente nulos se o nó não pertencer ao mês de início do contrato ($q_{i,n}^B = 0 \;\forall\, i \notin \mathcal{I}_n$). A posição comprada ou vendida transita ao longo dos estágios enquanto a duração do contrato for superior à defasagem $k$:
+Os volumes negociados respeitam os limites de lote ($0 \le q_{i,n}^B \le \bar{q}_i^B$) e são nulos caso o nó não pertença ao mês de início do contrato ($q_{i,n}^B = 0 \;\forall\, i \notin \mathcal{I}_n$). Para garantir a continuidade dos contratos multimensais, o modelo propaga as posições físicas e financeiras para o futuro. Essa transição de estados ocorre para todo contrato cuja duração seja maior que a defasagem $k$ analisada:
+
 \begin{align}
     v_{s,k,n} &= v_{s,k+1,a(n)} + \sum_{\substack{i \in \mathcal{I}_n \\ d_i > k,\ s_i = s}} \left(q_{i,n}^B - q_{i,n}^S\right) \quad \forall\, k < D_{\max} \\
-    v_{s,D_{\max},n} &= \sum_{\substack{i \in \mathcal{I}_n \\ d_i > D_{\max},\ s_i = s}} \left(q_{i,n}^B - q_{i,n}^S\right)
+    c_{s,k,n} &= c_{s,k+1,a(n)} + \sum_{\substack{i \in \mathcal{I}_n \\ d_i > k,\ s_i = s}} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right) \quad \forall\, k < D_{\max}
 \end{align}
-
 De forma análoga, a taxa de exposição financeira corrente (R\$/h) herda o histórico dos meses anteriores acrescida da valoração dos novos negócios:
 \begin{align}
     c_{s,k,n} &= c_{s,k+1,a(n)} + \sum_{\substack{i \in \mathcal{I}_n \\ d_i > k,\ s_i = s}} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right) \quad \forall\, k < D_{\max} \\
     c_{s,D_{\max},n} &= \sum_{\substack{i \in \mathcal{I}_n \\ d_i > D_{\max},\ s_i = s}} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right)
 \end{align}
 
-No momento da liquidação (o "Acaso"), a exposição físico-financeira spot ($E_{s,n}$) equaciona a geração própria, os contratos legados e o \textit{pipeline} recém-adquirido:
+No momento da liquidação (a Incerteza), a exposição spot ($E_{s,n}$) equaciona a geração própria, a carteira legada e os novos contratos alocados ($v_{s,1,a(n)}$):
 \begin{equation}
     E_{s,n} = G_{s,n} + V_{s,n}^{0B} - V_{s,n}^{0S} + \sum_{\substack{i \in \mathcal{I}_n \\ s_i = s}} (q_{i,n}^B - q_{i,n}^S) + v_{s,1,a(n)}
 \end{equation}
 
-O saldo final no nó $x_n$ consolida o caixa anterior, o resultado financeiro da carteira legada ($R_n^{\text{leg}}$), os novos contratos e a liquidação da exposição spot ao preço $P_{s,n}$:
+A variável de estado central $x_n$ consolida o balanço de caixa, somando o saldo do pai, o resultado da carteira legada ($R_n^{\text{leg}}$), os novos contratos marcados a mercado e a liquidação da exposição spot ao preço revelado $P_{s,n}$:
 \begin{equation}
     x_n = x_{a(n)} + R_n^{\text{leg}} + \left[ \sum_{i \in \mathcal{I}_n} \left(q_{i,n}^S K_i^S - q_{i,n}^B K_i^B\right) + \sum_{s \in \mathcal{S}} c_{s,1,a(n)} \right] h_n + \sum_{s \in \mathcal{S}} E_{s,n}\, P_{s,n}\, h_n
 \end{equation}
 
-Para garantir a viabilidade em cenários extremos (recurso completo relativo), modela-se o limite de crédito como uma restrição elástica através da folga $\delta_n$:
+Para garantir a viabilidade irrestrita em cenários severos (recurso completo relativo), o limite de crédito atua como uma restrição elástica através da folga $\delta_n$:
 \begin{equation}
     x_n + \delta_n \ge L^{\text{cred}} \quad \forall\, n \in \mathcal{N} \label{eq:credito}
 \end{equation}
 
-A diretriz ótima é obtida maximizando a esperança matemática do saldo final nos nós folha, penalizando fortemente ($M = 10^9$) as violações de crédito ao longo da árvore:
+Maximizando a esperança matemática nos nós folha e penalizando violações ($M = 10^9$), a função objetivo é definida como:
 \begin{equation}
     \max \quad \mathbb{E}[x] = \sum_{n \in \mathcal{L}} \pi_n\, x_n - M \sum_{n \in \mathcal{N} \setminus \{0\}} \pi_n\, \delta_n
 \end{equation}
-Para estabilidade numérica dos solucionadores, todos os fluxos financeiros foram escalonados por $10^6$. Condições de contorno triviais ($x_0 = C_{\text{inicial}}$ e variáveis nulas em $t=0$) completam a formulação.
+Para estabilidade do \textit{solver}, os fluxos financeiros são escalonados por $10^6$. Condições de inicialização definem $x_0 = C_{\text{inicial}}$ e posições nulas para $t=0$.
 
 \subsection{Decomposição via SDDP e Topologia de Grafo de Políticas}
 \label{sec:sddp_grafo}
 
-Para contornar o crescimento exponencial da árvore do DEQ, adota-se a Programação Dinâmica Dual Estocástica estruturada sob um \textit{Policy Graph}. Para isolar a incerteza da decisão, adota-se um \textbf{Grafo Hazard} bipartido para cada mês $t$:
+Em contraste ao DEQ — que indexa matrizes por meio da expansão combinatória de nós ($n$) —, o método SDDP (Programação Dinâmica Dual Estocástica) formula o problema através da decomposição por estágios temporais ($t$) e espaços de estados, evitando a criação da árvore completa em memória.
+
+Para isolar a Incerteza da Decisão dentro de um mesmo mês $t$, adota-se a topologia de \textbf{Grafo Hazard} bipartido:
 \begin{itemize}
-    \item \textbf{Nó de Decisão} $(t, 0)$: O agente decide $(q^B, q^S)$ sem conhecer o cenário atual. O objetivo do subproblema é transitar o estado, logo, o fluxo do estágio é $f_{(t,0)} = 0$.
-    \item \textbf{Nó de Liquidação} $(t, c)$: A incerteza $\omega_t = (P_{s,t}, G_{s,t})$ se materializa, atuando sobre a decisão travada em $(t,0)$. O fluxo financeiro e as penalidades são apurados: $f_{(t,c)} = x_{\text{out}} - x_{\text{in}} - M \cdot \delta_{t,c}$.
+    \item \textbf{Nó de Decisão} $(t, 0)$: O agente decide $(q^B, q^S)$ conhecendo apenas os estados herdados. O fluxo financeiro do subproblema é nulo ($f_{(t,0)} = 0$).
+    \item \textbf{Nó de Liquidação} $(t, c)$: A incerteza $\omega_t = (P_{s,t}, G_{s,t})$ se materializa. A exposição spot é liquidada e as penalidades apuradas: $f_{(t,c)} = x_{\text{out}} - x_{\text{in}} - M \cdot \delta_{t,c}$.
 \end{itemize}
 
-Durante o treinamento do SDDP, políticas subótimas podem gerar estados de caixa que violariam a Equação~\ref{eq:credito}. Impor restrições rígidas causaria falhas no \textit{forward pass}. A adoção da variável de folga $\delta_{t,c}$ garante a factibilidade e direciona os cortes de Benders até que a política convirja para as margens de crédito estabelecidas, provendo equivalência teórica com o DEQ.
+A variável de folga $\delta_{t,c}$ garante que, durante a fase \textit{forward} do treinamento, políticas inicialmente subótimas não gerem infactibilidades matemáticas caso violem a Equação~\ref{eq:credito}. As funções de recurso futuro (Cortes de Benders) iterativamente empurram a política para a região factível, garantindo convergência equivalente à do DEQ.
