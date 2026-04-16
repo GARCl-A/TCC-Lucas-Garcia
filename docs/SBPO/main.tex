@@ -1,0 +1,94 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage{sbpo-template}
+%\usepackage[latin1]{inputenc}
+\usepackage[brazil]{babel}    % português do Brasil
+\usepackage[utf8]{inputenc}   % acentos no UTF-8
+\usepackage[T1]{fontenc}      % para hifenização correta
+\usepackage{amsmath,amssymb}
+\usepackage{url}
+\usepackage[square]{natbib}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\includegraphics[scale=0.5]{sbpo2026-header-logo.png}}
+%\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\headruleskip}{-1mm}
+%\setlength\headheight{101.0pt}
+%\addtolength{\textheight}{-101.0pt}
+\setlength\headheight{86pt}
+\addtolength{\textheight}{-86pt}
+\setlength{\headsep}{5mm}
+\setlength{\footskip}{4.08003pt}
+
+\begin{document}
+
+\title{GESTÃO DINÂMICA DE PORTFÓLIO DE CONTRATOS DE ENERGIA: \\ COMPARAÇÃO ENTRE EQUIVALENTE DETERMINÍSTICO E SDDP} 
+
+\maketitle
+\thispagestyle{fancy}
+
+\author{
+\name{Lucas Garcia}
+\institute{Universidade Federal do Rio de Janeiro (UFRJ)}
+\iaddress{Rio de Janeiro - RJ}
+\email{lucas.garcia@ufrj.br}
+}
+
+\author{ 
+\name{Nome do Orientador}
+\institute{Universidade Federal do Rio de Janeiro (UFRJ)} 
+\iaddress{Rio de Janeiro - RJ}
+\email{orientador@ufrj.br}
+}
+
+\vspace{8mm}
+\begin{resumo}
+Este trabalho aborda o problema de gestão de portfólio de uma comercializadora de energia elétrica exposta ao Preço de Liquidação de Diferenças (PLD). Propõe-se uma modelagem estocástica multiestágio para otimizar decisões de compra e venda de contratos bilaterais sob incerteza climática e de preços. Comparam-se duas abordagens clássicas: o Equivalente Determinístico (DEQ), via árvore de cenários, e a Programação Dinâmica Dual Estocástica (SDDP). Os resultados demonstram que, embora ambos convirjam para a política ótima em instâncias de menor dimensão, o DEQ apresenta um estrangulamento crítico de memória RAM devido ao overhead algébrico na formulação da matriz, enquanto o SDDP mantém a tratabilidade computacional para horizontes expandidos.
+\end{resumo}
+
+\bigskip
+\begin{palchaves}
+Otimização Estocástica, SDDP, Mercado de Energia, JuMP.
+
+\bigskip
+\noindent{Tópicos (indique, em ordem de PRIORIDADE, o(s) tópicos(s) de seu artigo) }
+\end{palchaves}
+
+\vspace{8mm}
+
+\begin{abstract}
+This paper addresses the portfolio management problem for an energy trading company exposed to the Settlement Price for Differences (PLD). A multistage stochastic modeling is proposed to optimize buying and selling decisions of bilateral contracts under climate and price uncertainty. Two classical approaches are compared: the Deterministic Equivalent (DEQ), via scenario trees, and the Stochastic Dual Dynamic Programming (SDDP). Results demonstrate that while both converge to the optimal policy in small instances, DEQ presents a critical RAM bottleneck due to algebraic overhead in matrix formulation, whereas SDDP maintains computational tractability for expanded horizons.
+\end{abstract}
+
+\bigskip
+\begin{keywords}
+Stochastic Optimization, SDDP, Energy Market, JuMP.
+
+\bigskip
+\noindent{Paper topics (indicate in order of PRIORITY the paper topic(s))}
+\end{keywords}
+
+\newpage
+\section{Introdução}
+A comercialização de energia no Ambiente de Contratação Livre (ACL) brasileiro exige a tomada de decisões vinculativas antes da revelação da hidrologia e do PLD. Este trabalho foca na gestão de risco de caixa e manutenção de margens de crédito através de modelos multiestágio, comparando os limites computacionais do método de árvore de cenários com o método de decomposição de Benders (SDDP).
+
+\input{modelagem-matematica.tex}
+
+\section{Análise de Resultados e Desempenho}
+
+\subsection{Convergência Computacional}
+Testes em instâncias controladas confirmaram a equivalência dos métodos. Para instâncias tratáveis, tanto o SDDP como o DEQ produziram o mesmo limite superior para o saldo esperado e prescreveram decisões idênticas no primeiro estágio, validando a abordagem de penalização (recurso completo) na função objetivo.
+
+\subsection{Limites de Escalabilidade e Overhead Algébrico}
+A instrumentação do algoritmo revelou que o DEQ sofre colapso por memória RAM antes mesmo de iniciar a etapa do solucionador (\textit{solver}). Numa instância projetada para 70.000 nós, a instanciação no JuMP exige mais de $10$ GB de memória alocada devido ao peso das estruturas algébricas (dicionários e ponteiros). Esta complexidade espacial condena a tratabilidade do DEQ para aplicações reais, justificando o uso do SDDP que, por gerar apenas um estágio de cada vez, escapa ao estrangulamento da árvore de cenários.
+
+\section{Conclusões}
+O SDDP provou ser computacionalmente superior para a gestão estocástica de portfólios no mercado livre, contornando a maldição da dimensionalidade imposta pela formulação algébrica da árvore de cenários. 
+
+~\\
+\bibliographystyle{sbpo}
+\bibliography{exemplo-latex}
+
+\end{document}
