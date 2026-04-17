@@ -78,13 +78,13 @@ Stochastic Optimization, SDDP, Energy Market, JuMP.
 \end{keywords}
 
 \newpage
-\section{Introdução}
+\section{[IGNORAR]Introdução}
 A comercialização de energia no Ambiente de Contratação Livre (ACL) brasileiro exige a tomada de decisões vinculativas antes da revelação da hidrologia e do PLD. Este trabalho foca na gestão de risco de caixa e manutenção de margens de crédito através de modelos multiestágio, comparando os limites computacionais do método de árvore de cenários com o método de decomposição de Benders (SDDP).
 
 \input{modelagem-matematica.tex}
 \input{estudo-de-caso.tex}
 
-\section{Análise de Resultados e Desempenho}
+\section{[IGNORAR]Análise de Resultados e Desempenho}
 
 \subsection{Convergência Computacional}
 Testes em instâncias controladas confirmaram a equivalência dos métodos. Para instâncias tratáveis, tanto o SDDP como o DEQ produziram o mesmo limite superior para o saldo esperado e prescreveram decisões idênticas no primeiro estágio, validando a abordagem de penalização (recurso completo) na função objetivo.
@@ -92,7 +92,7 @@ Testes em instâncias controladas confirmaram a equivalência dos métodos. Para
 \subsection{Limites de Escalabilidade e Overhead Algébrico}
 A instrumentação do algoritmo revelou que o DEQ sofre colapso por memória RAM antes mesmo de iniciar a etapa do solucionador (\textit{solver}). Numa instância projetada para 70.000 nós, a instanciação no JuMP exige mais de $10$ GB de memória alocada devido ao peso das estruturas algébricas (dicionários e ponteiros). Esta complexidade espacial condena a tratabilidade do DEQ para aplicações reais, justificando o uso do SDDP que, por gerar apenas um estágio de cada vez, escapa ao estrangulamento da árvore de cenários.
 
-\section{Conclusões}
+\section{[IGNORAR]Conclusões}
 O SDDP provou ser computacionalmente superior para a gestão estocástica de portfólios no mercado livre, contornando a maldição da dimensionalidade imposta pela formulação algébrica da árvore de cenários. 
 
 ~\\

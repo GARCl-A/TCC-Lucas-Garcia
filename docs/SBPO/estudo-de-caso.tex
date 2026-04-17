@@ -7,29 +7,30 @@ Para avaliar as formulações propostas sob condições realistas do Ambiente de
 
 \subsection{Modelagem Estocástica de Preços (PLD)}
 
-O Preço de Liquidação de Diferenças (PLD) é a principal variável de incerteza do modelo. Como a capacidade dos reservatórios hídricos não se altera do dia para a noite, o preço da energia em um mês possui forte dependência do que ocorreu no mês anterior. Para representar essa característica, adotou-se um modelo estatístico conhecido como PAR(1) (Autorregressivo Periódico de ordem 1), calibrado com a série histórica da CCEE de 2001 a 2025.
+O Preço de Liquidação de Diferenças (PLD) é a principal variável de incerteza do modelo. Devido à inércia estrutural do sistema elétrico — resultante da capacidade de armazenamento dos reservatórios e de ciclos macroeconômicos de demanda —, o preço de um dado mês apresenta forte dependência estatística em relação ao período imediatamente anterior. Para representar essa autocorrelação, adotou-se um modelo estatístico conhecido como PAR(1) (Autorregressivo Periódico de ordem 1), calibrado com a série histórica da CCEE de 2001 a 2025.
 
-Os preços de energia possuem uma assimetria peculiar: eles podem sofrer picos extremos em épocas de escassez, mas não podem ser negativos. Para evitar a geração de cenários com preços irreais, a modelagem foi construída sobre o logaritmo dos dados. Para cada submercado ($s$) e mês ($m$), foram extraídos três parâmetros: a média mensal ($\mu_{s,m}$), o desvio padrão ($\sigma_{s,m}$) e o grau de correlação com o mês passado ($\rho_{s,m}$).
+Os preços de energia possuem uma assimetria peculiar: eles podem sofrer picos extremos em épocas de escassez, mas não podem ser negativos. Para evitar a geração de cenários com preços irreais, a modelagem foi construída sobre o logaritmo dos dados. Para cada submercado ($s$) e mês ($m$), foram extraídos três parâmetros: a média mensal ($\mu_{s,m}$), o desvio padrão ($\sigma_{s,m}$) e o grau de correlação de Pearson com o mês passado ($\rho_{s,m}$).
 
 A simulação dos cenários ($c$) avança um mês por vez, guiada pela seguinte relação:
 \begin{equation}
     Z_{s,m}^{(c)} = \rho_{s,m} Z_{s,m-1}^{(c)} + \sqrt{1 - \rho_{s,m}^2} \cdot \varepsilon_m^{(c)}
 \end{equation}
 
-Em termos práticos, essa equação define que o novo preço padronizado ($Z$) é composto por duas partes: a inércia herdada do mês anterior e um "choque" aleatório ($\varepsilon_m^{(c)}$), que representa a imprevisibilidade do clima. 
+Em termos práticos, essa equação define que o novo preço padronizado ($Z$) é composto por duas componentes: a inércia herdada do mês anterior e um "choque" aleatório ($\varepsilon_m^{(c)} \sim \mathcal{N}(0,1)$). Este choque é uma variável aleatória extraída de uma distribuição normal padrão, representando a imprevisibilidade de fatores exógenos (como variações climáticas abruptas) que alteram o balanço do sistema naquele mês.
 
-Para que o modelo respeite a realidade do Sistema Interligado Nacional (SIN), o mesmo choque aleatório ($\varepsilon_m$) foi aplicado simultaneamente aos quatro submercados. Isso garante a "correlação espacial" do sistema, refletindo o fato de que uma seca severa costuma afetar múltiplas bacias ao mesmo tempo. 
+Para que o modelo respeite a realidade do Sistema Interligado Nacional (SIN), o mesmo choque estocástico ($\varepsilon_m$) foi aplicado simultaneamente aos quatro submercados. Isso garante a correlação espacial do sistema, refletindo o fato de que eventos extremos de afluência costumam impactar múltiplas regiões concomitantemente. 
 
 Por fim, os valores simulados tiveram seu logaritmo revertido ($e^X$) e passaram por um teto e piso numérico, garantindo que nenhum cenário rompa os limites regulatórios estruturais fixados pela ANEEL para o ano vigente.
 
 \subsection{Geração Física e Acoplamento Estocástico}
 
-A exposição da comercializadora depende intrinsecamente do volume físico de energia de que dispõe para lastro. A geração estocástica mensal de cada usina na carteira foi simulada via método de Monte Carlo, partindo das médias e desvios padrão do histórico operativo.
+A exposição da comercializadora depende intrinsecamente do volume físico de energia de que dispõe para lastro. A geração estocástica mensal de cada usina na carteira foi simulada via método de Monte Carlo, baseando-se nas médias e desvios padrão do seu histórico operativo.
 
-Para capturar a dinâmica do mercado de energia, implementou-se um mecanismo de \textbf{acoplamento reverso} entre a geração e o PLD simulado. Definiu-se o Fator PLD como a razão entre o preço do cenário corrente e o preço esperado (Curva \textit{Forward}). A média de geração foi então condicionalmente ajustada:
+Para capturar a dinâmica do mercado de energia, implementou-se um mecanismo de \textbf{acoplamento reverso} entre a geração simulada e o PLD. Definiu-se o \textit{Fator PLD} como a razão entre o preço do cenário corrente e o preço esperado (Curva \textit{Forward}). Antes do sorteio estocástico de geração, a média esperada das usinas foi condicionalmente ajustada:
 \begin{itemize}
-    \item \textbf{Fontes Hidráulicas:} A média esperada sofreu ajuste inversamente proporcional ao Fator PLD, modelando o fato de que cenários de preços elevados correspondem a períodos de baixa afluência hídrica e, consequentemente, menor despacho físico.
-    \item \textbf{Fontes Eólicas:} O ajuste ocorreu de forma diretamente proporcional, porém amortecida (fator de potência $0.5$), capturando os períodos de elevada geração eólica no Nordeste que frequentemente deprimem o PLD regional.
+    \item \textbf{Fontes Hidráulicas:} A média esperada sofreu ajuste inversamente proporcional ao Fator PLD, modelando o fato de que cenários de preços elevados correspondem a períodos de baixa afluência hídrica e, consequentemente, menor despacho físico das usinas.
+    \item \textbf{Fontes Eólicas:} O ajuste ocorreu de forma diretamente proporcional, porém amortecida (elevado a $0.5$), capturando o fenômeno sistêmico onde períodos de elevada geração eólica costumam deprimir o PLD, especialmente na região Nordeste.
+    \item \textbf{Demais Fontes (ex: Solar e Térmica):} A média de geração foi mantida estritamente igual à média histórica, desvinculada do PLD, sofrendo apenas a perturbação estocástica natural baseada em seu desvio padrão individual.
 \end{itemize}
 
 \subsection{Estruturação de Portfólio e Curva Forward}
