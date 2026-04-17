@@ -35,11 +35,16 @@ Para capturar a dinâmica do mercado de energia, implementou-se um mecanismo de 
 
 \subsection{Estruturação de Portfólio e Curva Forward}
 
-A posição inicial do agente (Carteira Legada) foi parametrizada como uma posição de Venda \textit{Short} (\textit{hedge}), cujo volume corresponde a um percentual fixo da geração física média esperada de seus ativos. O preço médio desses contratos foi balizado pelo histórico público de liquidação de contratos bilaterais MCSD de energia nova.
+Para que a simulação reflita a realidade de uma empresa comercializadora, é necessário definir o seu ponto de partida e as opções de negociação disponíveis. 
 
-Para a estruturação das opções de decisão do otimizador (a "Mesa de Operações"), calcularam-se os valores esperados do PLD em cada nó, extraindo-se a \textbf{Curva Forward} do sistema. Foram então instanciados contratos de compra e venda com durações variadas ($d_i$). Para emular a liquidez e o prêmio de risco do mercado real, os preços dos ativos negociáveis foram estabelecidos aplicando-se um \textit{Spread} assimétrico sobre a Curva Forward:
+O ponto de partida é a chamada \textbf{Carteira Legada}, que representa os contratos de venda que a empresa já assinou antes do início da otimização. Como a empresa é proprietária de usinas, ela corre o risco de os preços caírem no futuro. Para se proteger (\textit{hedge}), ela vende antecipadamente uma parcela da sua geração física esperada a um preço fixo. O volume dessa carteira foi definido como um percentual da produção média das usinas, e o preço médio foi balizado pelos valores históricos de contratos registrados na CCEE.
+
+Com a carteira inicial definida, o modelo precisa de referências de preço para tomar novas decisões. A principal referência é a \textbf{Curva Forward}, que representa o preço "médio" esperado pelo mercado para cada mês futuro. No modelo, essa curva é extraída calculando-se a média aritmética de todos os cenários de PLD gerados para cada nó da árvore.
+
+Por fim, definiram-se os novos produtos que o otimizador pode comprar ou vender (a "Mesa de Operações"). Para simular a realidade do mercado, onde sempre é mais caro comprar do que vender, aplicou-se um \textbf{Spread} (uma margem de custo) sobre a Curva Forward. Isso cria um custo de transação:
 \begin{align}
-    K_i^{\text{Compra (Ask)}} &= \mathbb{E}[PLD_{s, d_i}] \times (1 + Spread) \\
-    K_i^{\text{Venda (Bid)}} &= \mathbb{E}[PLD_{s, d_i}] \times (1 - Spread)
+    K_i^{\text{Preço de Compra}} &= \text{Média do PLD esperado} \times (1 + \text{Spread}) \\
+    K_i^{\text{Preço de Venda}} &= \text{Média do PLD esperado} \times (1 - \text{Spread})
 \end{align}
-Dessa forma, o otimizador só assume novas posições físicas se o ganho na gestão de risco da árvore de cenários justificar o custo de transação (\textit{spread}) embutido nos contratos daquela maturidade.
+
+Essa diferença de preços garante que o otimizador não faça trocas inúteis. Ele só decidirá realizar uma nova compra ou venda se a redução de risco na árvore de cenários for valiosa o suficiente para compensar o custo de "pagar o spread" do mercado.
