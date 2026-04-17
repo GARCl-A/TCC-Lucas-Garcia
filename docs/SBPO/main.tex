@@ -43,6 +43,13 @@
 \email{orientador@ufrj.br}
 }
 
+\author{ 
+\name{Nome do Orientador}
+\institute{Universidade Federal do Rio de Janeiro (UFRJ)} 
+\iaddress{Rio de Janeiro - RJ}
+\email{orientador@ufrj.br}
+}
+
 \vspace{8mm}
 \begin{resumo}
 Este trabalho aborda o problema de gestão de portfólio de uma comercializadora de energia elétrica exposta ao Preço de Liquidação de Diferenças (PLD). Propõe-se uma modelagem estocástica multiestágio para otimizar decisões de compra e venda de contratos bilaterais sob incerteza climática e de preços. Comparam-se duas abordagens clássicas: o Equivalente Determinístico (DEQ), via árvore de cenários, e a Programação Dinâmica Dual Estocástica (SDDP). Os resultados demonstram que, embora ambos convirjam para a política ótima em instâncias de menor dimensão, o DEQ apresenta um estrangulamento crítico de memória RAM devido ao overhead algébrico na formulação da matriz, enquanto o SDDP mantém a tratabilidade computacional para horizontes expandidos.
@@ -75,6 +82,7 @@ Stochastic Optimization, SDDP, Energy Market, JuMP.
 A comercialização de energia no Ambiente de Contratação Livre (ACL) brasileiro exige a tomada de decisões vinculativas antes da revelação da hidrologia e do PLD. Este trabalho foca na gestão de risco de caixa e manutenção de margens de crédito através de modelos multiestágio, comparando os limites computacionais do método de árvore de cenários com o método de decomposição de Benders (SDDP).
 
 \input{modelagem-matematica.tex}
+\input{estudo-de-caso.tex}
 
 \section{Análise de Resultados e Desempenho}
 
