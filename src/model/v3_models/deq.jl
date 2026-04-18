@@ -1,5 +1,7 @@
 using CSV, DataFrames, Dates, JuMP, HiGHS, Statistics, Printf, Random
 
+include(joinpath(@__DIR__, "config_instancia.jl"))
+
 # --- Configuração ---
 
 struct DEQConfig
@@ -22,18 +24,24 @@ end
 function load_deq_config()
     data_dir = joinpath(@__DIR__, "..", "..", "..", "data", "processed")
 
-    arquivo_cenarios = joinpath(data_dir, "cenarios_final.csv")
-    df_temp = CSV.read(arquivo_cenarios, DataFrame, select=["data", "cenario"])
-
-    y_meses    = length(unique(df_temp.data))
-    x_cenarios = length(unique(df_temp.cenario))
-
-    println("⚙️ Autoconfiguração: Encontrados $x_cenarios cenários ($y_meses meses) no CSV.")
+    # Lê num_meses e num_ramos de config_instancia.jl (única fonte da verdade).
+    # Se as constantes não estiverem definidas, lê do CSV como fallback.
+    if @isdefined(INSTANCIA_NUM_MESES) && @isdefined(INSTANCIA_NUM_RAMOS)
+        num_meses = INSTANCIA_NUM_MESES
+        num_ramos = INSTANCIA_NUM_RAMOS
+        println("⚙️ Config: $num_meses meses × $num_ramos ramos (de config_instancia.jl)")
+    else
+        arquivo_cenarios = joinpath(data_dir, "cenarios_final.csv")
+        df_temp = CSV.read(arquivo_cenarios, DataFrame, select=["data", "cenario"])
+        num_meses = length(unique(df_temp.data))
+        num_ramos = length(unique(df_temp.cenario))
+        println("⚙️ Autoconfiguração: $num_ramos cenários ($num_meses meses) lidos do CSV.")
+    end
 
     return DEQConfig(
         data_dir,
-        y_meses,
-        x_cenarios,
+        num_meses,
+        num_ramos,
         42,      # seed
         0.0,     # caixa inicial (R$)
         -1e8,    # limite de crédito (-100 Mi em R$)

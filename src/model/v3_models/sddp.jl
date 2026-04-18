@@ -1,4 +1,5 @@
 using SDDP, JuMP, Statistics, CSV, DataFrames, Dates
+include(joinpath(@__DIR__, "config_instancia.jl"))
 include("deq.jl")
 
 function build_scenario_indexes(data::MarketData, mercado::DadosMercado, config::DEQConfig)

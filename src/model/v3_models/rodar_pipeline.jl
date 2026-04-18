@@ -10,34 +10,17 @@
 #
 # Depois rode: python pipeline_validacao.py
 
+include(joinpath(@__DIR__, "config_instancia.jl"))
 include("deq.jl")
 include("sddp.jl")
 
 using CSV, DataFrames, Statistics
 
-# ── Parâmetros da instância ─────────────────────────────────────────────────
-# AJUSTE: defina aqui o tamanho da instância que quer rodar
-NUM_MESES = 6
-NUM_RAMOS = 7
-
 println("\n" * "="^60)
-println("PIPELINE DE VALIDAÇÃO — instância: $(NUM_MESES) meses × $(NUM_RAMOS) ramos")
+println("PIPELINE DE VALIDAÇÃO — instância: $(INSTANCIA_NUM_MESES) meses × $(INSTANCIA_NUM_RAMOS) ramos")
 println("="^60)
 
-# ── Config base (caminhos e constantes financeiras) ─────────────────────────
-# Reutiliza load_deq_config() só para pegar o data_dir e as constantes,
-# depois sobrescreve num_meses e num_ramos com os valores passados via ARGS.
-_base = load_deq_config()
-config = DEQConfig(
-    _base.data_dir,
-    NUM_MESES,
-    NUM_RAMOS,
-    _base.seed,
-    _base.caixa_inicial,
-    _base.limite_credito,
-    _base.escala,
-)
-
+config  = load_deq_config()
 out_dir = joinpath(config.data_dir, "..", "results")
 mkpath(out_dir)
 
@@ -93,7 +76,7 @@ trades_sddp = filter(r -> r.data in Set(mercado.meses), data_mkt.trades)
 NT_sddp     = nrow(trades_sddp)
 max_d       = maximum(trades_sddp.duracao_meses)
 
-model_sddp, _, ESCALA = build_sddp_model(config, data_mkt, mercado, max_d)
+model_sddp, _, ESCALA_sddp = build_sddp_model(config, data_mkt, mercado, max_d)
 
 println("   Treinando SDDP...")
 SDDP.train(
@@ -107,25 +90,26 @@ SDDP.train(
 bound = SDDP.calculate_bound(model_sddp)
 println("   Upper Bound: R\$ $(round(bound / 1e6, digits=3)) Mi")
 
-# Simula para extrair decisões
+# Simula usando exatamente a mesma lógica do main_sddp() em sddp.jl
 trade_ids = 1:NT_sddp
-sim_syms  = vcat([Symbol("qB_", i) for i in trade_ids],
+sim_syms  = vcat([:caixa],
+                 [Symbol("qB_", i) for i in trade_ids],
                  [Symbol("qS_", i) for i in trade_ids])
 
-sims = SDDP.simulate(model_sddp, 1, sim_syms; skip_undefined_variables = true)
+sims = SDDP.simulate(model_sddp, 1000, sim_syms; skip_undefined_variables = true)
 
-# Exporta CSV completo (comportamento original do main_sddp, simplificado)
 _, pld_idx, ger_idx = build_scenario_indexes(data_mkt, mercado, config)
+
 rows_sddp_full = NamedTuple{(:simulacao, :estagio, :mes, :cenario, :pld_sub, :geracao_sub,
                               :ticker, :compra_mwm, :venda_mwm, :saldo_mi),
-                             Tuple{Int,Int,Dates.Date,Int,Float64,Float64,String,Float64,Float64,Float64}}[]
+                             Tuple{Int,Int,Date,Int,Float64,Float64,String,Float64,Float64,Float64}}[]
 for (s_idx, sim) in enumerate(sims)
     for m_idx in 1:config.num_meses
         mes          = mercado.meses[m_idx]
-        stage_dec    = sim[2 * m_idx - 1]
-        stage_settle = sim[2 * m_idx]
-        saldo        = stage_settle[:caixa].out / 1e6
-        c_id         = stage_settle[:node_index][2]
+        stage_dec    = sim[2 * m_idx - 1]   # nó de decisão (c_id == 0)
+        stage_settle = sim[2 * m_idx]        # nó de liquidação (c_id > 0)
+        saldo  = stage_settle[:caixa].out / 1e6
+        c_id   = stage_settle[:node_index][2]
         for i in trade_ids
             trades_sddp.data[i] == mes || continue
             qb = get(stage_dec, Symbol("qB_", i), nothing)
@@ -144,8 +128,9 @@ end
 CSV.write(joinpath(out_dir, "sddp_decisoes.csv"), DataFrame(rows_sddp_full))
 println("   Decisões completas exportadas: $(joinpath(out_dir, "sddp_decisoes.csv"))")
 
-# Exporta CSV reduzido: apenas o nó raiz do estágio 1
-# A decisão do estágio 1 é pré-cenário — stage_dec = sims[1][1]
+# Exporta CSV reduzido: nó raiz do estágio 1
+# A decisão do estágio 1 é pré-cenário — todas as simulações têm o mesmo valor.
+# Usa sims[1][1] que é o stage_dec do mês 1 da simulação 1.
 trades_mes1 = [i for i in trade_ids if trades_sddp.data[i] == mercado.meses[1]]
 rows_sddp_raiz = NamedTuple{(:ticker, :compra_mwm, :venda_mwm),
                               Tuple{String, Float64, Float64}}[]
