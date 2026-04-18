@@ -260,5 +260,3 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     main_sddp()
 end
-
-main_sddp()
