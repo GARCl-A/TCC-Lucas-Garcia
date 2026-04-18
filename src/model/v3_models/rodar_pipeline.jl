@@ -119,7 +119,7 @@ for (s_idx, sim) in enumerate(sims)
             pld     = round(get(pld_idx, (mes, c_id, sub), 0.0), digits=2)
             geracao = round(get(ger_idx, (mes, c_id, sub), 0.0), digits=2)
             push!(rows_sddp_full, (s_idx, m_idx, mes, c_id, pld, geracao,
-                                   trades_sddp.ticker[i],
+                                   String(trades_sddp.ticker[i]),
                                    round(qb, digits=4), round(qs, digits=4),
                                    round(saldo, digits=3)))
         end
@@ -138,7 +138,7 @@ for i in trades_mes1
     qb = get(sims[1][1], Symbol("qB_", i), 0.0)
     qs = get(sims[1][1], Symbol("qS_", i), 0.0)
     push!(rows_sddp_raiz, (
-        ticker     = trades_sddp.ticker[i],
+        ticker     = String(trades_sddp.ticker[i]),
         compra_mwm = round(qb, digits=4),
         venda_mwm  = round(qs, digits=4),
     ))
