@@ -15,17 +15,17 @@ function run_sddp_benchmarks()
     config_base = load_deq_config() 
     data_bruta  = load_market_data(config_base)
 
-    # Os casos limites onde o DEQ sofreu ou parou (do seu log anterior)
+    # Os casos limites onde o DEQ sofreu ou parou (do log Amanda PC)
     casos_limite = [
-        (2, 14), # 32.767 nós
-        (3, 9),  # 29.524 nós
-        (4, 8),  # 87.381 nós
-        (5, 6),  # 19.531 nós
-        (6, 6),  # 55.987 nós
-        (7, 5),  # 19.608 nós
-        (8, 5),  # 37.449 nós
-        (9, 5),  # 66.430 nós
-        (10, 4)  # 11.111 nós
+        (2, 16),  # 131.071 nós
+        (3, 10),  #  88.573 nós
+        (4, 8),   #  87.381 nós
+        (5, 7),   #  97.656 nós
+        (6, 6),   #  55.987 nós
+        (7, 6),   # 137.257 nós
+        (8, 5),   #  37.449 nós
+        (9, 5),   #  66.430 nós
+        (10, 5),  # 111.111 nós
     ]
 
     arquivo_csv = joinpath(config_base.data_dir, "..", "results", "benchmark_sddp.csv")
