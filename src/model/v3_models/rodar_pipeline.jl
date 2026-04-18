@@ -100,14 +100,14 @@ sims = SDDP.simulate(model_sddp, 1000, sim_syms; skip_undefined_variables = true
 
 _, pld_idx, ger_idx = build_scenario_indexes(data_mkt, mercado, config)
 
-rows_sddp_full = NamedTuple{(:simulacao, :estagio, :mes, :cenario, :pld_sub, :geracao_sub,
-                              :ticker, :compra_mwm, :venda_mwm, :saldo_mi),
-                             Tuple{Int,Int,Date,Int,Float64,Float64,String,Float64,Float64,Float64}}[]
+cols_sddp = (simulacao=Int[], estagio=Int[], mes=Date[], cenario=Int[],
+             pld_sub=Float64[], geracao_sub=Float64[], ticker=String[],
+             compra_mwm=Float64[], venda_mwm=Float64[], saldo_mi=Float64[])
 for (s_idx, sim) in enumerate(sims)
     for m_idx in 1:config.num_meses
         mes          = mercado.meses[m_idx]
-        stage_dec    = sim[2 * m_idx - 1]   # nó de decisão (c_id == 0)
-        stage_settle = sim[2 * m_idx]        # nó de liquidação (c_id > 0)
+        stage_dec    = sim[2 * m_idx - 1]
+        stage_settle = sim[2 * m_idx]
         saldo  = stage_settle[:caixa].out / 1e6
         c_id   = stage_settle[:node_index][2]
         for i in trade_ids
@@ -118,14 +118,20 @@ for (s_idx, sim) in enumerate(sims)
             sub     = trades_sddp.submercado[i]
             pld     = round(get(pld_idx, (mes, c_id, sub), 0.0), digits=2)
             geracao = round(get(ger_idx, (mes, c_id, sub), 0.0), digits=2)
-            push!(rows_sddp_full, (s_idx, m_idx, mes, c_id, pld, geracao,
-                                   String(trades_sddp.ticker[i]),
-                                   round(qb, digits=4), round(qs, digits=4),
-                                   round(saldo, digits=3)))
+            push!(cols_sddp.simulacao,    s_idx)
+            push!(cols_sddp.estagio,      m_idx)
+            push!(cols_sddp.mes,          mes)
+            push!(cols_sddp.cenario,      c_id)
+            push!(cols_sddp.pld_sub,      pld)
+            push!(cols_sddp.geracao_sub,  geracao)
+            push!(cols_sddp.ticker,       String(trades_sddp.ticker[i]))
+            push!(cols_sddp.compra_mwm,   round(qb, digits=4))
+            push!(cols_sddp.venda_mwm,    round(qs, digits=4))
+            push!(cols_sddp.saldo_mi,     round(saldo, digits=3))
         end
     end
 end
-CSV.write(joinpath(out_dir, "sddp_decisoes.csv"), DataFrame(rows_sddp_full))
+CSV.write(joinpath(out_dir, "sddp_decisoes.csv"), DataFrame(cols_sddp))
 println("   Decisões completas exportadas: $(joinpath(out_dir, "sddp_decisoes.csv"))")
 
 # Exporta CSV reduzido: nó raiz do estágio 1
