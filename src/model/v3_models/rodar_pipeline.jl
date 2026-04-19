@@ -88,7 +88,7 @@ SDDP.train(
 )
 
 bound = SDDP.calculate_bound(model_sddp)
-println("   Upper Bound: R\$ $(round(bound / 1e6, digits=3)) Mi")
+println("   Upper Bound: R\$ $(round(bound, digits=3)) Mi")
 
 # Simula usando exatamente a mesma lógica do main_sddp() em sddp.jl
 trade_ids = 1:NT_sddp
