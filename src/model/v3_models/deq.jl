@@ -385,8 +385,7 @@ function extract_deq_results(config::DEQConfig, model, cenarios::ArvoreCenarios,
 
     status = JuMP.termination_status(model)
     if status == MOI.OPTIMAL
-        println("  Saldo Esperado : R\$ $(round(value(saldo_esperado) / 1e6, digits=3)) Mi")
-
+        println("  Saldo Esperado : R\$ $(round(value(saldo_esperado), digits=3)) Mi")
         no_mes1 = filhos_de[1][1]
         println("\nTrades executados no mês 1 (decisão única, pré-cenário):")
         for t in 1:NT

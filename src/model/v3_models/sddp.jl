@@ -204,8 +204,7 @@ function main_sddp()
 
     bound = SDDP.calculate_bound(model)
     println("\nTreinamento concluido!")
-    println("   Upper Bound (Z) : R\$ $(round(bound / 1e6, digits = 3)) Mi")
-
+    println("   Upper Bound (Z) : R\$ $(round(bound, digits = 3)) Mi")
     scenario_ids, pld_idx, ger_idx = build_scenario_indexes(data, mercado, config)
 
     trade_ids = 1:nrow(trades)
@@ -216,8 +215,8 @@ function main_sddp()
     sims = SDDP.simulate(model, 1000, sim_syms; skip_undefined_variables = true)
 
     saldos_finais = [sim[end][:caixa].out for sim in sims]
-    println("   E[Saldo Final] (1000 simulacoes) : R\$ $(round(mean(saldos_finais) / 1e6, digits = 3)) Mi")
-
+    println("   E[Saldo Final] (1000 simulacoes) : R\$ $(round(mean(saldos_finais), digits = 3)) Mi")
+    
     println("\nTrades executados no mes 1 (decisao unica, pre-cenario):")
     trades_mes1 = [i for i in trade_ids if trades.data[i] == mercado.meses[1]]
     for i in trades_mes1
