@@ -76,7 +76,7 @@ struct ArvoreCenarios
     producao_no::Dict{Tuple{Int,String},Float64}
 end
 
-const MAX_NOS = 70_000
+const MAX_NOS = 250_000
 
 function build_scenario_tree(data::MarketData, config::DEQConfig)::ArvoreCenarios
     Random.seed!(config.seed)
