@@ -32,7 +32,7 @@ USINAS_SELECIONADAS = [8578, 110222, 81285]  # Se vazio ou None, pega todas
 # ============================================
 # PARÂMETROS DE MERCADO
 # ============================================
-PERCENTUAL_CONTRATO_LEGADO = 0.80  # 80% da produção vendida em contratos
+PERCENTUAL_CONTRATO_LEGADO = 0.30  # 80% da produção vendida em contratos
 SPREAD_TRADES = 0.01  # 1% de spread bid-ask
 LIMITE_LOTE_TRADES = 100  # MWm por lote
 PRECO_CONTRATO_DEFAULT = 230.00  # R$/MWh - Fallback se não houver dados
@@ -55,7 +55,7 @@ DATA_INICIO_SIMULACAO = "2026-01-01"
 # PARÂMETROS DE TRADES
 # ============================================
 DURACOES_TRADES = [1, 3, 6]                          # Durations dos produtos (meses)
-SPREADS_POR_DURACAO = {1: 0.03, 3: 0.015, 6: 0.005}  # Spread bid-ask por duration
+SPREADS_POR_DURACAO = {1: 0.06, 3: 0.03, 6: 0.01}  # Spread bid-ask por duration
 
 # ============================================
 # LIMITES PLD (ANEEL)
